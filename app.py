@@ -37,7 +37,6 @@ async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict = N
             await asyncio.sleep(backoff)
             backoff *= 2.0
     return {}
-
 # =====================================================================
 # 2. CONTINUOUS OMNI-SKENER: LIKVIDITA & DETEKCIA PÚMP
 # =====================================================================
@@ -272,7 +271,6 @@ def build_adaptive_setup(symbol: str, data: dict, ai: dict, is_sniper: bool):
         "trailing_dist": natr * 0.5, "fee_buffer": 0.20, "max_pain": base_strike - 1500, "call_wall": base_strike + 2500, "put_wall": base_strike - 2500,
         "exec_type": execution_type, "funding_drag": funding_drag * 100
     }
-
 # =====================================================================
 # 5. MULTI-PANELOVÁ INTERAKTÍVNA VIZUALIZÁCIA (Plotly Dark Mode)
 # =====================================================================
@@ -330,6 +328,7 @@ def draw_professional_dashboard(symbol: str, df: pd.DataFrame, cvd_data: np.ndar
    
     fig.update_layout(xaxis_rangeslider_visible=False, height=600, template="plotly_dark", showlegend=True, margin=dict(t=10, b=10, l=10, r=10))
     st.plotly_chart(fig, use_container_width=True)
+
 # =====================================================================
 # 6. DYNAMICKÝ WEB TERMINÁL A ULTRA-FAST FRAGMENT INFRAŠTRUKTÚRA
 # =====================================================================
@@ -357,9 +356,9 @@ def render_ultra_fast_tickers(symbols_to_track):
             if res_skills and hasattr(res_skills, 'data') and res_skills.data:
                 total_learned_skills = sum([int(row.get("total_trades", 0)) for row in res_skills.data])
         except Exception:
-            total_learned_skills = 92
+            total_learned_skills = 74
     else:
-        total_learned_skills = 146
+        total_learned_skills = 168
 
     st.sidebar.markdown(f"### 🧠 Celkom naučených AI dovedností: `<span style='color:lime;'>{total_learned_skills}</span>`", unsafe_allow_html=True)
     st.sidebar.markdown("---")
@@ -414,7 +413,7 @@ def main():
     success_trades = 89
     fail_trades = 53
     
-    mock_equity = [1000, 1012, 1005, 1024, 1045, 1038, 1067, 1098, 1085, 1120, 1145, 1138, 1176, 1205, 1242.50]
+    mock_equity = [1000.0, 1022.5, 1015.0, 1041.2, 1038.0, 1065.4, 1092.1, 1081.0, 1115.3, 1142.0, 1135.2, 1168.0, 1195.4, 1188.0, 1210.5]
     chart_data = pd.DataFrame({"Equity ($)": mock_equity}, index=dates)
    
     c_g, c_m = st.columns(2)
@@ -438,96 +437,7 @@ def main():
             if r.status_code == 200:
                 all_binance_pairs = sorted([s["symbol"] for s in r.json().get("symbols", []) if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"])
     except Exception:
-        pass
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### ⚙️ Nastavenie Okna 3")
-    selected_custom_pair = st.sidebar.selectbox("Zadaj alebo vyhľadaj skratku mince:", all_binance_pairs, index=all_binance_pairs.index("UNIUSDT") if "UNIUSDT" in all_binance_pairs else 0)
-
-    @st.cache_data(ttl=30)
-    def load_heavy_market_pools():
-        with httpx.Client() as c:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            trend_pool, sniper_pool = loop.run_until_complete(scan_all_markets(httpx.AsyncClient()))
-            return trend_pool, sniper_pool
-
-    trend_pool, sniper_pool = load_heavy_market_pools()
-
-    best_altcoin_pair = "ETHUSDT"
-    best_altcoin_data = None
-    if trend_pool:
-        for sym, data in trend_pool:
-            if sym != "BTCUSDT":
-                best_altcoin_pair = sym
-                best_altcoin_data = data
-                break
-
-    with httpx.Client() as c:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        custom_window_data = loop.run_until_complete(fetch_single_market_data(httpx.AsyncClient(), selected_custom_pair))
-
-    btc_data = None
-    if trend_pool:
-        for sym, data in trend_pool:
-            if sym == "BTCUSDT":
-                btc_data = data
-                break
-
-    tracked_symbols = ["BTCUSDT", best_altcoin_pair, selected_custom_pair]
-    
-    if "open_trades_active" not in st.session_state:
-        st.session_state["open_trades_active"] = []
-
-    # DYNAMICKÁ GENERÁCIA EXPERIMENTÁLNEHO PORTFÓLIA ZO ŽIVÝCH TICKEROV (OKOMLO $76K PRE BTC)
-    if len(st.session_state["open_trades_active"]) == 0:
-        try:
-            with httpx.Client() as cl:
-                res_btc = cl.get(f"https://binance.com?symbol=BTCUSDT").json()
-                res_alt = cl.get(f"https://binance.com?symbol={best_altcoin_pair}").json()
-                p_btc = float(res_btc.get("price", 76000))
-                p_alt = float(res_alt.get("price", 2800))
-                
-                if btc_data:
-                    btc_ai = get_complete_ai_setup("BTCUSDT")
-                    m_b = build_adaptive_setup("BTCUSDT", btc_data, btc_ai, is_sniper=False)
-                    st.session_state["open_trades_active"].append({
-                        "symbol": "BTCUSDT", "direction": "LONG", "entry": p_btc,
-                        "sl": p_btc * (1.0 - (m_b["sl_percent"]/100.0)), "highest": p_btc, "trailing_dist": p_btc * (m_b["sl_percent"]/100.0),
-                        "tp1": m_b["tp1_price"] * (p_btc / btc_data["price"]), "tp2": m_b["tp2_price"] * (p_btc / btc_data["price"]), "tp3": m_b["tp3_price"] * (p_btc / btc_data["price"])
-                    })
-                if best_altcoin_data:
-                    alt_ai = get_complete_ai_setup(best_altcoin_pair)
-                    m_a = build_adaptive_setup(best_altcoin_pair, best_altcoin_data, alt_ai, is_sniper=False)
-                    st.session_state["open_trades_active"].append({
-                        "symbol": best_altcoin_pair, "direction": "LONG", "entry": p_alt,
-                        "sl": p_alt * (1.0 - (m_a["sl_percent"]/100.0)), "highest": p_alt, "trailing_dist": p_alt * (m_a["sl_percent"]/100.0),
-                        "tp1": m_a["tp1_price"] * (p_alt / best_altcoin_data["price"]), "tp2": m_a["tp2_price"] * (p_alt / best_altcoin_data["price"]), "tp3": m_a["tp3_price"] * (p_alt / best_altcoin_data["price"])
-                    })
-        except Exception:
-            pass
-
-    live_prices = render_ultra_fast_tickers(tracked_symbols)
-
-    # --- OKNO 1: BTCUSDT FIXNÁ KOTVA ---
-    st.markdown("## 📈 Okno 1: Fixná Trhová Kotva (BTCUSDT)")
-    if btc_data:
-        btc_ai = get_complete_ai_setup("BTCUSDT")
-        btc_m = build_adaptive_setup("BTCUSDT", btc_data, btc_ai, is_sniper=False)
-        trigger_status = check_orderflow_trigger(btc_data, btc_ai)
-        st.caption(f"Smer: **{btc_data['trend']}** | Exekúcia: **{btc_m['exec_type']}** | Spúšťač: **{trigger_status}**")
-        draw_professional_dashboard("BTCUSDT", btc_data["df"], btc_data["cvd"], btc_data["oi"], btc_m, live_prices.get("BTCUSDT"))
-    else:
-        st.info("Načítavam živé dáta pre Bitcoin...")
-
-    st.markdown("---")
-
-    # --- OKNO 2: DYNAMICKÁ ALTCOINOVÁ ANOMÁLIA ---
-    st.markdown(f"## 🎯 Okno 2: Najostrejšia Altcoinová Príležitosť ({best_altcoin_pair})")
-    if best_altcoin_data:
-        alt_ai = get_complete_ai_setup(best_altcoin_pair)
-        alt_m = build_adaptive_setup(best_altcoin_pair, best_altcoin_data, alt_ai, is_sniper=False)
 
 
 
