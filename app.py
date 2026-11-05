@@ -638,7 +638,7 @@ def main():
 
    
 
-    c_g, c_m = st.columns()
+    c_g, c_m = st.columns(2)
 
     with c_g: st.line_chart(chart_data)
 
