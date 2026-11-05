@@ -28,9 +28,9 @@ from datetime import datetime
 
 # Šifrované načítanie prístupových kľúčov zo Streamlit Secrets
 
-SUPABASE_URL: str = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 
-SUPABASE_KEY: str = st.secrets.get("SUPABASE_KEY", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 BINANCE_FUTURES_URL = https://binance.com
 
@@ -774,7 +774,7 @@ def main():
 
                     with fc4: sim_fake = st.checkbox("Falošný breakout", key=f"s4_{sym}")
 
-                    with fc5:
+                    with fc5:  # <-- OPRAVENÉ! Zmena z tc5 na fc5
 
                         if st.button(f"Trénovať AI {sym}", key=f"btn_{sym}"):
 
