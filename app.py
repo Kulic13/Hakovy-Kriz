@@ -644,7 +644,8 @@ def main():
 
     with c_m:
 
-        st.metric(label="Celkový čistý zisk", value=f"${mock_equity[-1] - mock_equity:.2f}", delta="+21.05 %")
+       st.metric(label="Celkový čistý zisk", value=f"${mock_equity[-1] - mock_equity[0]:.2f}", delta="+21.05 %")
+
 
         st.metric(label="Aktuálny Kellyho Risk Faktor", value="Frakcia 0.25 (Štvrťový)", delta="Stabilný")
 
