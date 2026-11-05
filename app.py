@@ -32,7 +32,7 @@ SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 
-BINANCE_FUTURES_URL = https://binance.com
+BINANCE_FUTURES_URL = "https://binance.com"
 
  
 
