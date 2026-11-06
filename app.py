@@ -11,7 +11,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 
 # =====================================================================
-# INSTITUCIONALNE LOGOVANIE & FAIL-SAFE KONFIGURACIA
+# INŠTITUCIONÁLNE LOGOVANIE & FAIL-SAFE KONFIGURÁCIA
 # =====================================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('QuantumOmniHunter')
@@ -27,10 +27,10 @@ if SUPABASE_URL and SUPABASE_KEY:
         from supabase import create_client
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
-        logger.error(f'Chyba inicializacie Supabase: {e}')
+        logger.error(f'Chyba inicializácie Supabase: {e}')
 
 # =====================================================================
-# SIETOVA VRSTVA S EXPONENCIALNYM BACKOFFOM (ANTI-RATE LIMIT 429)
+# SIEŤOVÁ VRSTVA S EXPONENCIÁLNYM BACKOFFOM (ANTI-RATE LIMIT 429)
 # =====================================================================
 async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict = None) -> dict:
     backoff = 0.5
@@ -44,24 +44,23 @@ async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict = N
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
             if attempt == 2:
-                logger.error(f'Definitivne zlyhanie poziadavky na {url}: {e}')
+                logger.error(f'Definitívne zlyhanie požiadavky na {url}: {e}')
                 return {}
             await asyncio.sleep(backoff)
             backoff *= 2.0
     return {}
 
 # =====================================================================
-# UNI OPCNY MODEL: TYZDENNE KONTRAKTY (MAX PAIN, CALL/PUT WALLS)
+# UNI OPČNÝ MODEL: TÝŽDENNÉ KONTRAKTY (MAX PAIN, CALL/PUT WALLS)
 # =====================================================================
 async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
-    '''Plne robustny a UNI opcny model (Tyzdenne kontrakty). Ak zlyha, vrati None.'''
     try:
         exchange_info = await fetch_with_retry(client, f'{BINANCE_OPTIONS_URL}/eapi/v1/exchangeInfo')
         if not exchange_info or 'symbols' not in exchange_info:
             return None
             
         btc_symbols = [
-            s['symbol'] for s in exchange_info['symbols']
+            s['symbol'] for s in exchange_info['symbols'] 
             if s['baseAsset'] == 'BTC' and s['status'] == 'TRADING'
         ]
         
@@ -118,7 +117,7 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
                 
         return {'max_pain': max_pain, 'call_wall': call_wall, 'put_wall': put_wall}
     except Exception as e:
-        logger.error(f'Chyba vypoctu opcnych metrik (UNI pass): {e}')
+        logger.error(f'Chyba výpočtu opčných metrík (UNI pass): {e}')
         return None
 
 # =====================================================================
@@ -162,11 +161,11 @@ async def scan_market_for_champion(client: httpx.AsyncClient):
                 
         return champion_symbol
     except Exception as e:
-        logger.error(f'Chyba skenovania sampiona: {e}')
+        logger.error(f'Chyba skenovania šampióna: {e}')
         return 'ETHUSDT'
 
 # =====================================================================
-# PLNY DATA LOAD NA VYZIADANIE (LAZY LOADING - FAZA 2 / ON-DEMAND)
+# PLNY DATA LOAD NA VYŽIADANIE (LAZY LOADING - FAZA 2 / ON-DEMAND)
 # =====================================================================
 async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str):
     try:
@@ -199,12 +198,10 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str)
         np.random.seed(int(closes[-1]))
         sim_oi = np.clip(np.cumsum(np.random.randn(96) * 600) + 80000, 40000, 150000)
        
-        # Permanentny vypocet hladin 20x Liquidity Poolov (Permanentna mapa trhu)
         mmr = 0.004
         liq_long_20x = float(np.min(lows[-20:])) * (1.0 - (1/20) + mmr)
         liq_short_20x = float(np.max(highs[-20:])) * (1.0 + (1/20) - mmr)
        
-        # Matematicke overenie trendu
         sim_lsr = 0.78
         if closes[-1] > ema100 and sim_lsr < 0.85:
             trend = 'LONG_ONLY'
@@ -213,7 +210,6 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str)
         else:
             trend = 'LONG_ONLY' if closes[-1] > ema100 else 'SHORT_ONLY'
             
-        # Deterministicke vyhodnotenie automatickeho vstupu na zaklade trhovych anomalii
         is_active_trade = True if (natr_14 > 1.2 and abs(sim_cvd[-1] - sim_cvd[-5]) > 500) else False
        
         return {
@@ -224,14 +220,13 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str)
             'is_active_trade': is_active_trade
         }
     except Exception as e:
-        logger.error(f'Chyba stahovania klines pre {sym}: {e}')
+        logger.error(f'Chyba sťahovania klines pre {sym}: {e}')
         return None
 
 # =====================================================================
-# DYNAMICKY WIN RATE & DATA SETUPS (SUPABASE)
+# DYNAMICKÝ WIN RATE & DATA SETUPS (SUPABASE)
 # =====================================================================
 def get_complete_ai_setup(symbol: str) -> dict:
-    '''Taha surove data z cloudu a vypocitava cisty Win Rate.'''
     default_setup = {'symbol': symbol, 'win_rate': 0.0, 'total_trades': 0, 'sl_modifier': 1.0, 'tp_modifier': 1.0}
     if not supabase:
         return default_setup
@@ -243,7 +238,6 @@ def get_complete_ai_setup(symbol: str) -> dict:
             losses = float(data_row.get('loss_count', 0))
             total_trades = int(data_row.get('total_trades', wins + losses))
             
-            # Dynamicky exaktny vypocet Win Rate na zaklade surovych dat cloudu
             win_rate = (wins / max(1.0, wins + losses)) * 100.0 if (wins + losses) > 0 else 0.0
             
             return {
@@ -269,7 +263,7 @@ def build_adaptive_setup(symbol: str, data: dict, ai: dict):
    
     calc_leverage = int(25.0 / sl_percent)
     actual_lev = max(2, min(10, calc_leverage))
-    exec_type = f'LEVERAGE FUTURES'
+    exec_type = f'⚡ BINANCE FUTURES (Páka {actual_lev}x)'
     leverage = actual_lev
         
     tp1_price = price * (1.0 + (direction * (tp1_percent / 100.0)))
@@ -285,7 +279,7 @@ def build_adaptive_setup(symbol: str, data: dict, ai: dict):
     }
 
 # =====================================================================
-# VYKRESLOVANIE GRAFOV S PODMIENENYMI OBCHODNYMI HLADINAMI & UNI OPČNOU VRSTVOU
+# VYKRESLOVANIE GRAFOV S PODMIENENÝMI OBCHODNÝMI HLADINAMI & UNI OPČNOU VRSTVOU
 # =====================================================================
 def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: dict = None, is_active: bool = False):
     df = data['df']
@@ -293,11 +287,9 @@ def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: 
    
     fig.add_trace(go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Cena'), row=1, col=1)
     
-    # 1. PERMANENTNE HLADINY (Vykresluju sa VZDY pre všetky okna)
     fig.add_hline(y=data['liq_long_20x'], line_width=1.5, line_color='yellow', name='Liq 20x Long', row=1, col=1)
     fig.add_hline(y=data['liq_short_20x'], line_width=1.5, line_color='orange', name='Liq 20x Short', row=1, col=1)
    
-    # UNI Opcna vrstva (Iba pre BTC Okno 1 a len ak su data uspesne stiahnu)
     if option_lines and symbol == 'BTCUSDT':
         if option_lines.get('max_pain'):
             fig.add_hline(y=option_lines['max_pain'], line_width=2.0, line_dash='dashdot', line_color='violet', name='Max Pain', row=1, col=1)
@@ -306,8 +298,7 @@ def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: 
         if option_lines.get('put_wall'):
             fig.add_hline(y=option_lines['put_wall'], line_width=2.5, line_color='purple', name='Put Wall', row=1, col=1)
    
-    # 2. PODMIENENE OBCHODNE HLADINY (Vykresluju sa VYHRADNE pri aktivnom obchode)
-    if is_active and m:
+    if is_active and m and 'grid' in m:
         fig.add_hline(y=m['grid'][0], line_dash='dash', line_color='cyan', line_width=1.5, row=1, col=1)
         fig.add_hline(y=m['final_sl'], line_width=2.0, line_color='red', row=1, col=1)
         fig.add_hline(y=m['tp1_price'], line_width=1.5, line_dash='dot', line_color='lime', row=1, col=1)
@@ -323,12 +314,9 @@ def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: 
     fig.update_layout(xaxis_rangeslider_visible=False, height=400, template='plotly_dark', showlegend=False, margin=dict(t=10, b=10, l=10, r=10))
     st.plotly_chart(fig, use_container_width=True)
 
-# =====================================================================
-# HLAVNY VYPOCTOVY A RENDERUJUCI CYKLUS (MAIN)
-# =====================================================================
 def main():
     st.set_page_config(page_title='Quantum Omni Hunter 2026', layout='wide')
-    st.title('Autonomous AI Hunter Control Cockpit')
+    st.title('🤖 Autonómny AI Sviečkový Riadiaci Kokpit')
    
     if 'tf_w1' not in st.session_state: st.session_state['tf_w1'] = '15m'
     if 'tf_w2' not in st.session_state: st.session_state['tf_w2'] = '15m'
@@ -337,7 +325,7 @@ def main():
     if 'monthly_trades' not in st.session_state:
         st.session_state['monthly_trades'] = []
         st.session_state['current_month'] = datetime.now().month
-        
+
     if datetime.now().month != st.session_state['current_month']:
         st.session_state['monthly_trades'] = []
         st.session_state['current_month'] = datetime.now().month
@@ -349,18 +337,18 @@ def main():
     champ_pair = loop.run_until_complete(scan_market_for_champion(client))
     
     all_pairs = ['ETHUSDT', 'SOLUSDT', 'UNIUSDT', 'LINKUSDT', 'AAVEUSDT', 'DOGEUSDT']
-    selected_custom = st.sidebar.selectbox('Zadaj alebo vyhladaj skratku mince (Okno 3):', all_pairs, index=1)
+    selected_custom = st.sidebar.selectbox('Zadaj alebo vyhľadaj skratku mince (Okno 3):', all_pairs, index=1)
     
     btc_data = loop.run_until_complete(fetch_candle_data(client, 'BTCUSDT', st.session_state['tf_w1']))
     champ_data = loop.run_until_complete(fetch_candle_data(client, champ_pair, st.session_state['tf_w2']))
     custom_data = loop.run_until_complete(fetch_candle_data(client, selected_custom, st.session_state['tf_w3']))
-
+    
     setups = {}
     if btc_data: setups['BTCUSDT'] = build_adaptive_setup('BTCUSDT', btc_data, get_complete_ai_setup('BTCUSDT'))
     if champ_data: setups[champ_pair] = build_adaptive_setup(champ_pair, champ_data, get_complete_ai_setup(champ_pair))
     if custom_data: setups[selected_custom] = build_adaptive_setup(selected_custom, custom_data, get_complete_ai_setup(selected_custom))
 
-    st.sidebar.markdown('### Monitor Otvorenych Pozicii')
+    st.sidebar.markdown('### 🎯 Monitor Otvorených Pozícií')
     
     for s_name, label_window, d_source in [('BTCUSDT', 'Okno 1 (BTC)', btc_data), (champ_pair, f'Okno 2 ({champ_pair})', champ_data), (selected_custom, f'Okno 3 ({selected_custom})', custom_data)]:
         if not d_source:
@@ -370,7 +358,7 @@ def main():
         m_s = setups.get(s_name, {})
         
         with st.sidebar.container(border=True):
-            st.markdown(f'**{label_window}**')
+            st.markdown(f'**🪙 {label_window}**')
             
             if is_active:
                 ai_info = get_complete_ai_setup(s_name)
@@ -378,86 +366,86 @@ def main():
                 kelly_frac = max(0.0, (p_win * 1.5 - (1.0 - p_win)) / 1.5) * 0.25
                 allocated_usd = 100.0 * kelly_frac
                 
-                st.markdown(f'* Exekucia: `{m_s.get('exec_type', 'SPOT')}`')
-                st.markdown(f'* Alokovana Kellyho marza: `${allocated_usd:.2f} USD`')
-                st.markdown(f'* Vstup: `${m_s.get('grid', [d_source['price']])[0]:,.2f}`')
-                st.markdown(f'TP1: ${m_s.get('tp1_price', 0):,.2f} | TP2: ${m_s.get('tp2_price', 0):,.2f} | TP3: ${m_s.get('tp3_price', 0):,.2f}')
-                st.markdown(f'SL: ${m_s.get('final_sl', 0):,.2f}')
+                st.markdown(f'* Exekúcia: `{m_s.get("exec_type", "SPOT")}`')
+                st.markdown(f'* Alokovaná Kellyho marža: `${allocated_usd:.2f} USD`')
+                st.markdown(f'* Vstup: `${m_s.get("grid", [d_source["price"]])[0]:,.2f}`')
+                st.markdown(f'🎯 TP1: ${m_s.get("tp1_price", 0):,.2f} | TP2: ${m_s.get("tp2_price", 0):,.2f} | 🚀 TP3: ${m_s.get("tp3_price", 0):,.2f}')
+                st.markdown(f'🚨 SL: ${m_s.get("final_sl", 0):,.2f}')
                 st.markdown('* Live PnL: <span style="color:lime; font-weight:bold;">+1.45 %</span>', unsafe_allow_html=True)
             else:
-                st.markdown('SKENOVANIE SIETE')
-                st.caption('System monitoruje anomalie na trhu a caka na vygenerovanie optimalneho signalu modelom.')
+                st.markdown('<span style="color:orange; font-weight:bold;">⏳ SKENOVANIE SIETE</span>', unsafe_allow_html=True)
+                st.caption('Systém monitoruje anomálie na trhu a čaká na vygenerovanie optimálneho signálu modelom.')
 
-    st.markdown('### Kvantitativna Vykonnostna Vrstva (Start od 6. Novembra 2026)')
+    st.markdown('### 📊 Kvantitatívna Výkonnostná Vrstva (Štart od 6. Novembra 2026)')
     
     c_equity, c_matrix = st.columns(2)
     
     with c_equity:
-        st.markdown('#### Equity Dashboard (Pociatocny kapital: $100)')
+        st.markdown('#### 📈 Equity Dashboard (Počiatočný kapitál: $100)')
         equity_curve = [100.0]
-        timeline = ['Start']
+        timeline = ['Štart']
         
         for idx, t in enumerate(st.session_state['monthly_trades']):
-            equity_curve.append(100.0 + sum([x['pnl_usd'] for x in st.session_state['monthly_trades'][:idx+1]]))
+            equity_curve.append(100.0 + sum([x['pnl_usd'] for x in st.session_state['monthly_trades'] Mesočný register:[:idx+1]]))
             timeline.append(t['date_label'])
             
         df_eq = pd.DataFrame({'Konto Balance ($)': equity_curve}, index=timeline)
         st.line_chart(df_eq)
         
     with c_matrix:
-        st.markdown('#### Matrica Vykonu a Ucenia AI modelov')
+        st.markdown('#### 🧠 Matrica Výkonu a Učenia AI modelov')
         matrix_rows = []
         for c in ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'UNIUSDT']:
             ai_setup = get_complete_ai_setup(c)
             
             matrix_rows.append({
                 'Kryptomena': c,
-                'Ucebne kroky (AI)': ai_setup['total_trades'],
+                'Učebné kroky (AI)': ai_setup['total_trades'],
                 'Short Win / Fail': '0 / 0',
                 'Long Win / Fail': '0 / 0',
-                'Natrenovany Win Rate': f'{ai_setup['win_rate']:.1f} %'
+                'Natrenovaný Win Rate': f"{ai_setup['win_rate']:.1f} %"
             })
         st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, hide_index=True)
 
-    st.markdown('#### Mesacny register zrealizovanych obchodov (Aktualny mesiac)')
+    st.markdown('#### 📅 Mesačný register zrealizovaných obchodov (Aktuálny mesiac)')
     if st.session_state['monthly_trades']:
         st.dataframe(pd.DataFrame(st.session_state['monthly_trades'])[['Pair', 'Result', 'PnL %']], use_container_width=True, hide_index=True)
     else:
-        st.caption('Ziadne zrealizovane obchody za tento kalendarny mesiac. Register bezi od nuly.')
+        st.caption('Žiadne zrealizované obchody za tento kalendárny mesiac. Register beží od nuly.')
 
     st.markdown('---')
-    st.markdown('### Autonomne Svieckove Operacne Okna')
-    
+    st.markdown('### 📺 Autonómne Sviečkové Operačné Okná')
     st.markdown('---')
-    c_head1, c_tf1 = st.columns([0.8, 0.2])
+    
+    c_head1, c_tf1 = st.columns([3, 1])
     with c_head1:
-        st.markdown('#### Okno 1: Fixna Trhova Kotva (BTCUSDT)')
+        st.markdown('#### 📈 Okno 1: Fixná Trhová Kotva (BTCUSDT)')
     with c_tf1:
-        st.session_state['tf_w1'] = st.radio('Mierka Okna 1:', ['15m', '1m'], horizontal=True, label_visibility='collapsed', key='radio_w1')
+        st.session_state['tf_w1'] = st.radio('Mierka Okna 1:', ['15m', '1m'], index=0, key='sc_w1', horizontal=True)
     if btc_data:
         draw_professional_dashboard('BTCUSDT', btc_data, setups.get('BTCUSDT'), opt_lines, btc_data['is_active_trade'])
     else:
-        st.error('Zlyhalo stiahnutie dat pre Okno 1.')
+        st.error('Zlyhalo inštitucionálne sťahovanie dát pre Okno 1.')
         
     col_w2, col_w3 = st.columns(2)
     
     with col_w2:
         st.markdown('---')
-        c_head2, c_tf2 = st.columns([0.7, 0.3])
+        c_head2, c_tf2 = st.columns([2, 1])
         with c_head2:
-            st.markdown(f'#### Okno 2: Sampion Anomalii ({champ_pair})')
+            st.markdown(f'#### 🎯 Okno 2: Šampión Anomálií ({champ_pair})')
         with c_tf2:
-            st.session_state['tf_w2'] = st.radio(f'Mierka Okna 2:', ['15m', '1m'], horizontal=True, label_visibility='collapsed', key='radio_w2')
+            st.session_state['tf_w2'] = st.radio('Mierka Okna 2:', ['15m', '1m'], index=0, key='sc_w2', horizontal=True)
         if champ_data:
             draw_professional_dashboard(champ_pair, champ_data, setups.get(champ_pair), None, champ_data['is_active_trade'])
             
     with col_w3:
         st.markdown('---')
-        c_head3, c_tf3 = st.columns([0.7, 0.3])
+        c_head3, c_tf3 = st.columns([2, 1])
         with c_head3:
-            st.markdown(f'#### Okno 3: Sukromny Radar ({selected_custom})')
+            st.markdown(f'#### 🏹 Okno 3: Súkromný Radar ({selected_custom})')
         with c_tf3:
-            st.session_state['tf_w3'] = st.radio(f'Mierka Okna 3:', ['15m', '1m'], horizontal=True, label_visibility='collapsed', key='radio_w3')
+            st.session_state['tf_w3'] = st.radio('Mierka Okna 3:', ['15m', '1m'], index=0, key='sc_w3', horizontal=True)
         if custom_data:
             draw_professional_dashboard(selected_custom, custom_data, setups.get(selected_custom), None, custom_data['is_active_trade'])
 
