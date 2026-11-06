@@ -123,13 +123,9 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
 async def scan_market_for_champion(client: httpx.AsyncClient):
     try:
         tickers_24h = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr")
-        premium_data = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex")
-        
-        if not tickers_24h or not premium_data:
+        if not tickers_24h:
             return "ETHUSDT"
             
-        funding_map = {item["symbol"]: float(item["lastFundingRate"]) for item in premium_data if "symbol" in item}
-        
         candidates = [
             t for t in tickers_24h 
             if "symbol" in t and t["symbol"].endswith("USDT") and t["symbol"] != "BTCUSDT"
@@ -220,16 +216,29 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str):
 # AI ROZHODOVACIA STRATÉGIA, DEŇ 1 KELLY & PREPÍNANIE SPOT VS. PÁKA
 # =====================================================================
 def get_complete_ai_setup(symbol: str) -> dict:
-    default_setup = {"symbol": symbol, "win_rate": 58.4, "total_trades": 24, "sl_modifier": 1.0, "tp_modifier": 1.0}
+    default_setup = {"symbol": symbol, "win_rate": 58.4, "total_trades": 0, "sl_modifier": 1.0, "tp_modifier": 1.0}
     if not supabase:
         return default_setup
     try:
         res = supabase.table("ai_learning_stats").select("*").eq("symbol", symbol).execute()
         if res and hasattr(res, 'data') and res.data:
             if isinstance(res.data, list) and len(res.data) > 0:
-                return res.data[0]
+                record = res.data[0]
+                return {
+                    "symbol": symbol,
+                    "win_rate": record.get("win_rate", 58.4),
+                    "total_trades": record.get("total_trades", 0),
+                    "sl_modifier": record.get("sl_modifier", 1.0),
+                    "tp_modifier": record.get("tp_modifier", 1.0)
+                }
             elif isinstance(res.data, dict):
-                return res.data
+                return {
+                    "symbol": symbol,
+                    "win_rate": res.data.get("win_rate", 58.4),
+                    "total_trades": res.data.get("total_trades", 0),
+                    "sl_modifier": res.data.get("sl_modifier", 1.0),
+                    "tp_modifier": res.data.get("tp_modifier", 1.0)
+                }
     except Exception:
         pass
     return default_setup
@@ -310,18 +319,31 @@ def main():
     st.set_page_config(page_title="Autonomous AI Hunter 2026", layout="wide")
     st.title("🤖 Autonómny AI Sviečkový Riadiaci Kokpit")
    
+    current_time = datetime.now()
+    
     if "account_balance" not in st.session_state:
         st.session_state["account_balance"] = 100.0
         
     if "history_trades" not in st.session_state:
-        st.session_state["history_trades"] = [
-            {"time": "2026-11-06 08:00", "symbol": "BTCUSDT", "direction": "LONG", "pnl_usd": 12.50, "type": "WIN", "steps": 45},
-            {"time": "2026-11-06 09:30", "symbol": "SOLUSDT", "direction": "SHORT", "pnl_usd": -4.20, "type": "FAIL", "steps": 21},
-            {"time": "2026-11-06 11:15", "symbol": "ETHUSDT", "direction": "LONG", "pnl_usd": 18.90, "type": "WIN", "steps": 33}
-        ]
+        st.session_state["history_trades"] = []
+        
+    if "monthly_trades" not in st.session_state or "last_month_reset" not in st.session_state:
+        st.session_state["monthly_trades"] = []
+        st.session_state["last_month_reset"] = current_time.month
+        
+    if current_time.month != st.session_state["last_month_reset"]:
+        st.session_state["monthly_trades"] = []
+        st.session_state["last_month_reset"] = current_time.month
         
     if "live_prices" not in st.session_state:
         st.session_state["live_prices"] = {"BTCUSDT": 68000.0, "ETHUSDT": 2500.0, "SOLUSDT": 140.0}
+        
+    if "active_trades" not in st.session_state:
+        st.session_state["active_trades"] = {
+            "BTCUSDT": False,
+            "CHAMP": False,
+            "CUSTOM": False
+        }
 
     loop = asyncio.get_event_loop()
     client = httpx.AsyncClient()
@@ -356,7 +378,7 @@ def main():
         for t in st.session_state["history_trades"]:
             cum_pnl += t["pnl_usd"]
             equity_curve.append(100.0 + cum_pnl)
-            timeline.append(t["time"])
+            timeline.append(t["date_label"])
             
         df_eq = pd.DataFrame({"Konto Balance ($)": equity_curve}, index=timeline)
         st.line_chart(df_eq)
@@ -378,13 +400,21 @@ def main():
             matrix_rows.append({
                 "Kryptomena": c,
                 "Zrealizované obchody": len(trades_coin),
-                "Short Win/Fail": f"{s_win}W / {s_fail}F",
-                "Long Win/Fail": f"{l_win}W / {l_fail}F",
-                "Učebné kroky (AI)": ai_setup.get("total_trades", 15) if isinstance(ai_setup, dict) else 15,
-                "Natrenovaný Win Rate": f"{ai_setup.get('win_rate', 55.0) if isinstance(ai_setup, dict) else 55.0:.1f} %"
+                "Short Win/Fail": f"{s_win} / {s_fail}",
+                "Long Win/Fail": f"{l_win} / {l_fail}",
+                "Učebné kroky (AI)": ai_setup.get("total_trades", 0),
+                "Natrenovaný Win Rate": f"{ai_setup.get('win_rate', 55.0):.1f} %"
             })
             
         st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, hide_index=True)
+
+    # Register mesačných zrealizovaných obchodov hneď pod grafom
+    st.markdown("#### 📅 Register zrealizovaných obchodov za aktuálny mesiac")
+    if st.session_state["monthly_trades"]:
+        df_monthly = pd.DataFrame(st.session_state["monthly_trades"])[["Pair", "Result", "PnL %"]]
+        st.dataframe(df_monthly, use_container_width=True, hide_index=True)
+    else:
+        st.info("Žiadne zrealizované obchody v tomto mesiaci.")
 
     st.markdown("---")
 
@@ -394,35 +424,57 @@ def main():
     if custom_data: setups[selected_custom] = build_adaptive_setup(selected_custom, custom_data, get_complete_ai_setup(selected_custom))
 
     # =====================================================================
-    # SIDEBAR: AKTÍVNY MONITORING POZÍCIÍ & STRATÉGIA (BOD 1)
+    # SIDEBAR: AKTÍVNY MONITORING POZÍCIÍ & STRATÉGIA (BOD 1 & 2)
     # =====================================================================
-    st.sidebar.markdown("### 🎯 Monitor Otvorených Pozícií (BOD 1)")
+    st.sidebar.markdown("### 🎯 Monitor Otvorených Pozícií")
     
-    for s_name, label_window in [("BTCUSDT", "Okno 1 (BTC)"), (champ_pair, f"Okno 2 ({champ_pair})"), (selected_custom, f"Okno 3 ({selected_custom})")]:
+    windows_config = [
+        ("BTCUSDT", "Okno 1 (BTC)", "BTCUSDT"),
+        (champ_pair, f"Okno 2 ({champ_pair})", "CHAMP"),
+        (selected_custom, f"Okno 3 ({selected_custom})", "CUSTOM")
+    ]
+    
+    for s_name, label_window, state_key in windows_config:
         m_s = setups.get(s_name, {})
         live_p = st.session_state["live_prices"].get(s_name, 0.0)
         
-        ai_info = get_complete_ai_setup(s_name)
-        p_win = (ai_info.get("win_rate", 55.0) if isinstance(ai_info, dict) else 55.0) / 100.0
-        kelly_frac = max(0.0, (p_win * 1.5 - (1.0 - p_win)) / 1.5) * 0.25
-        allocated_usd = 100.0 * kelly_frac
+        is_active = st.session_state["active_trades"].get(state_key, False)
         
         with st.sidebar.container(border=True):
             st.markdown(f"**🪙 {label_window}**")
-            st.markdown(f"* Exekúcia: `{m_s.get('exec_type', 'SPOT')}`")
-            st.markdown(f"* Alokovaná Kellyho marža: `${allocated_usd:.2f} USD`")
-            st.markdown(f"* Live Cena: `${live_p:,.2f}` | Vstup: `${m_s.get('grid', [live_p])[0]:,.2f}`")
-            
-            c_tp, c_sl = st.columns(2)
-            with c_tp:
-                st.caption(f"🎯 TP1: ${m_s.get('tp1_price', 0):,.2f}")
-                st.caption(f"🎯 TP2: ${m_s.get('tp2_price', 0):,.2f}")
-                st.caption(f"🚀 TP3: ${m_s.get('tp3_price', 0):,.2f}")
-            with c_sl:
-                st.caption(f"🚨 SL: ${m_s.get('final_sl', 0):,.2f}")
-                st.caption(f"⏳ Vlečenie: {m_s.get('trailing_dist', 0):.2f}")
+            if is_active:
+                ai_info = get_complete_ai_setup(s_name)
+                p_win = ai_info.get("win_rate", 55.0) / 100.0
+                kelly_frac = max(0.0, (p_win * 1.5 - (1.0 - p_win)) / 1.5) * 0.25
+                allocated_usd = 100.0 * kelly_frac
                 
-            st.markdown("""* Live PnL: <span style="color:lime; font-weight:bold;">+1.45 %</span>""", unsafe_allow_html=True)
+                st.markdown(f"* Exekúcia: `{m_s.get('exec_type', 'SPOT')}`")
+                st.markdown(f"* Alokovaná Kellyho marža: `${allocated_usd:.2f} USD`")
+                st.markdown(f"* Live Cena: `${live_p:,.2f}` | Vstup: `${m_s.get('grid', [live_p])[0]:,.2f}`")
+                
+                c_tp, c_sl = st.columns(2)
+                with c_tp:
+                    st.caption(f"🎯 TP1: ${m_s.get('tp1_price', 0):,.2f}")
+                    st.caption(f"🎯 TP2: ${m_s.get('tp2_price', 0):,.2f}")
+                    st.caption(f"🚀 TP3: ${m_s.get('tp3_price', 0):,.2f}")
+                with c_sl:
+                    st.caption(f"🚨 SL: ${m_s.get('final_sl', 0):,.2f}")
+                    st.caption(f"⏳ Vlečenie: {m_s.get('trailing_dist', 0):.2f}")
+                    
+                st.markdown("""* Live PnL: <span style="color:lime; font-weight:bold;">+1.45 %</span>""", unsafe_allow_html=True)
+            else:
+                st.markdown("<span style='color:orange; font-weight:bold;'>⏳ SKENOVANIE SIETE</span>", unsafe_allow_html=True)
+                st.caption("Čaká sa na generovanie optimálneho signálu AI modelom...")
+
+    # Tlačidlo pre prepínanie simulácie stavu (pre účely testovania v UI)
+    if st.sidebar.checkbox("Simulovať aktívne obchody v oknách"):
+        st.session_state["active_trades"]["BTCUSDT"] = True
+        st.session_state["active_trades"]["CHAMP"] = True
+        st.session_state["active_trades"]["CUSTOM"] = True
+    else:
+        st.session_state["active_trades"]["BTCUSDT"] = False
+        st.session_state["active_trades"]["CHAMP"] = False
+        st.session_state["active_trades"]["CUSTOM"] = False
 
     # =====================================================================
     # GRAPHICS ROW 2: OBOJSMERNÉ GRAFICKÉ PANELY OKIEN 1, 2 A 3
