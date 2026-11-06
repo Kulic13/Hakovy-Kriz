@@ -51,7 +51,7 @@ async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict = N
     return {}
 
 # =====================================================================
-# OPČNÝ KVANTITATÍVNY MODEL (MAX PAIN, CALL/PUT WALLS) - IBA PRE BTC
+# OPČNÝ KVANTITATÍVNY MODEL (MAX PAIN, CALL/PUT WALLS - LEN PRE BTC)
 # =====================================================================
 async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
     default_metrics = {"max_pain": 68000.0, "call_wall": 72000.0, "put_wall": 64000.0}
@@ -118,21 +118,19 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
         return default_metrics
 
 # =====================================================================
-# SHARK ALPHA MATRIX SKENER (DVOJFÁZOVÝ ODĽAHČENÝ SKENER ŠAMPIÓNA)
+# SHARK ALPHA MATRIX SKENER (DVOJFÁZOVÝ LAZY-LOADING PRE ŠAMPIÓNA)
 # =====================================================================
 async def scan_market_for_champion(client: httpx.AsyncClient):
     try:
-        # FÁZA 1: Stiahnutie iba základných 24h dát pre určenie šampióna (Lazy Loading)
+        # Fáza 1: Stiahnutie len základných 24h a premiumIndex dát pre zistenie šampióna
         tickers_24h = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr")
-        premium_data = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex")
-        
-        if not tickers_24h or not premium_data:
+        if not tickers_24h:
             return "ETHUSDT"
             
         candidates = [
             t for t in tickers_24h 
             if "symbol" in t and t["symbol"].endswith("USDT") and t["symbol"] != "BTCUSDT"
-            and float(t.get("quoteVolume", 0)) >= 10000000
+            and float(t.get("quoteVolume", 0)) >= 10_000_000
         ]
         
         if not candidates:
@@ -162,9 +160,6 @@ async def scan_market_for_champion(client: httpx.AsyncClient):
         logger.error(f"Chyba skenovania šampióna: {e}")
         return "ETHUSDT"
 
-# =====================================================================
-# SŤAHOVANIE SVIEČOK A VÝPOČET STATISTICKÝCH UKAZOVATEĽOV
-# =====================================================================
 async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str):
     try:
         klines = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/klines", params={"symbol": sym, "interval": timeframe, "limit": 96})
@@ -200,26 +195,31 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str)
         np.random.seed(int(closes[-1]))
         sim_oi = np.clip(np.cumsum(np.random.randn(96) * 600) + 80000, 40000, 150000)
        
+        # Pravá exekučná logika smeru - State Machine Trigger podmienka
         sim_lsr = 1.25 if sym == "BTCUSDT" else 0.78
-       
+        is_trigger_active = False
+        
         if closes[-1] > ema100 and sim_lsr < 0.85:
             trend = "LONG_ONLY"
+            is_trigger_active = True
         elif closes[-1] < ema100 and sim_lsr > 1.70:
             trend = "SHORT_ONLY"
+            is_trigger_active = True
         else:
-            trend = "LONG_ONLY" if closes[-1] > ema100 else "SHORT_ONLY"
+            # Systém vyčkáva v skenovaní siete, ak nie je trend absolútne čistý
+            trend = "SCANNING"
+            is_trigger_active = False
        
-        # VÝPOČET LIKVIDITNÝCH POOLOV PRE PÁKU 20x (Permanentné hladiny)
-        mmr = 0.004
+        # Výpočet likviditných bazénov (20x páky) z lokálnych extrémov pre všetky okná
         resistance_20 = float(np.max(highs[-20:]))
         support_20 = float(np.min(lows[-20:]))
+        mmr = 0.004
         
         liq_pool_long_20x = support_20 * (1.0 - (1/20) + mmr)
         liq_pool_short_20x = resistance_20 * (1.0 + (1/20) - mmr)
        
         return {
-            "df": df, "price": float(closes[-1]), "natr": float(natr_14), "trend": trend,
-            "resistance": resistance_20, "support": support_20,
+            "df": df, "price": float(closes[-1]), "natr": float(natr_14), "trend": trend, "is_active": is_trigger_active,
             "liq_long_20x": liq_pool_long_20x, "liq_short_20x": liq_pool_short_20x,
             "cvd": sim_cvd, "oi": sim_oi, "funding_rate": funding_map.get(sym, 0.0001)
         }
@@ -228,42 +228,24 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str, timeframe: str)
         return None
 
 # =====================================================================
-# CLOUDOVÁ VRSTVA & DYNAMICKÝ REÁLNY VÝPOČET WIN RATE
+# CLOUDOVÉ PREPOJENIE (SUPABASE) & DYNAMICKÝ WIN RATE / UČEBNÉ KROKY
 # =====================================================================
 def get_complete_ai_setup(symbol: str) -> dict:
-    default_setup = {"symbol": symbol, "wins": 0, "losses": 0, "total_trades": 0, "win_rate": 0.0, "sl_modifier": 1.0, "tp_modifier": 1.0}
+    default_setup = {"symbol": symbol, "wins": 0, "losses": 0, "total_trades": 0, "sl_modifier": 1.0, "tp_modifier": 1.0}
     if not supabase:
         return default_setup
     try:
         res = supabase.table("ai_learning_stats").select("*").eq("symbol", symbol).execute()
         if res and hasattr(res, 'data') and res.data:
-            data_row = res.data[0] if isinstance(res.data, list) and len(res.data) > 0 else res.data
-            if isinstance(data_row, dict):
-                wins = int(data_row.get("wins", 0))
-                losses = int(data_row.get("losses", 0))
-                total = wins + losses
-                w_rate = (wins / total * 100.0) if total > 0 else 0.0
-                
-                return {
-                    "symbol": symbol,
-                    "wins": wins,
-                    "losses": losses,
-                    "total_trades": total,
-                    "win_rate": w_rate,
-                    "sl_modifier": float(data_row.get("sl_modifier", 1.0)),
-                    "tp_modifier": float(data_row.get("tp_modifier", 1.0))
-                }
+            if isinstance(res.data, list) and len(res.data) > 0:
+                return res.data[0]
+            elif isinstance(res.data, dict):
+                return res.data
     except Exception:
         pass
     return default_setup
 
-# =====================================================================
-# ŽIVÁ ROZHODOVACIA LOGIKA - AUTOMATICKÉ GENEROVANIE POZÍCIÍ
-# =====================================================================
 def build_adaptive_setup(symbol: str, data: dict, ai: dict):
-    if not data:
-        return {}
-        
     price = data["price"]
     natr = data["natr"]
     trend = data["trend"]
@@ -277,10 +259,10 @@ def build_adaptive_setup(symbol: str, data: dict, ai: dict):
     calc_leverage = int(25.0 / sl_percent)
     
     if natr > 3.0:
-        exec_type = "🚨 BINANCE SPOT (Páka 1x - Volatilita)"
+        exec_type = "🚨 BINANCE SPOT (Páka 1x - Ochrana Volatility)"
         leverage = 1
     elif trend == "LONG_ONLY" and funding > 0.10:
-        exec_type = "🚨 BINANCE SPOT (Páka 1x - Funding Squeeze)"
+        exec_type = "🚨 BINANCE SPOT (Páka 1x - Ochrana Funding Squeezu)"
         leverage = 1
     else:
         actual_lev = max(2, min(10, calc_leverage))
@@ -295,35 +277,37 @@ def build_adaptive_setup(symbol: str, data: dict, ai: dict):
     grid = [price, price * (1.0 - (direction * (sl_percent * 0.33 / 100.0))), price * (1.0 - (direction * (sl_percent * 0.66 / 100.0)))]
    
     return {
-        "is_active": True,
         "sl_percent": sl_percent, "tp1_price": tp1_price, "tp2_price": tp2_price, "tp3_price": tp3_price,
         "final_sl": final_sl, "grid": grid, "leverage": leverage, "exec_type": exec_type, "trailing_dist": natr * 0.5
     }
 
 # =====================================================================
-# INDIVIDUÁLNE OPERAČNÉ GRAFICKÉ PANELY (PLOTLY VRSTVA)
+# VYKRESLOVANIE GRAFOV (ZOBRAZENIE 3 AUTONÓMNYCH OPERAČNÝCH OKIEN)
 # =====================================================================
-def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: dict = None, is_trade_active: bool = False):
+def draw_professional_dashboard(symbol: str, data: dict, m: dict, is_active: bool, option_lines: dict = None):
     df = data["df"]
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
    
-    fig.add_trace(go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name=f"Cena {symbol}"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="Cena"), row=1, col=1)
     
-    fig.add_hline(y=data["liq_long_20x"], line_width=1.5, line_color="yellow", line_dash="solid", name="Liq Pool 20x Longs", row=1, col=1)
-    fig.add_hline(y=data["liq_short_20x"], line_width=1.5, line_color="orange", line_dash="solid", name="Liq Pool 20x Shorts", row=1, col=1)
+    # 1. PERMANENTNÉ HLADINY (Zobrazujú sa VŽDY - Liquidity Pooly 20x)
+    fig.add_hline(y=data["liq_long_20x"], line_width=1.5, line_color="yellow", name="Liq Long 20x", row=1, col=1)
+    fig.add_hline(y=data["liq_short_20x"], line_width=1.5, line_color="orange", name="Liq Short 20x", row=1, col=1)
    
+    # Exkluzívne inštitucionálne opčné hladiny pre BTC (Okno 1)
     if option_lines and symbol == "BTCUSDT":
         fig.add_hline(y=option_lines["max_pain"], line_width=2.0, line_dash="dashdot", line_color="violet", name="Max Pain", row=1, col=1)
         fig.add_hline(y=option_lines["call_wall"], line_width=2.5, line_color="fuchsia", name="Call Wall", row=1, col=1)
         fig.add_hline(y=option_lines["put_wall"], line_width=2.5, line_color="purple", name="Put Wall", row=1, col=1)
    
-    if is_trade_active and m:
-        fig.add_hline(y=m["grid"][0], line_dash="dash", line_color="cyan", line_width=1.5, name="Vstupná Cena", row=1, col=1)
-        fig.add_hline(y=m["final_sl"], line_width=2.0, line_color="red", name="Stop Loss (SL)", row=1, col=1)
-        fig.add_hline(y=m["tp1_price"], line_width=1.5, line_dash="dot", line_color="lime", name="Target TP1", row=1, col=1)
-        fig.add_hline(y=m["tp2_price"], line_width=1.5, line_dash="dot", line_color="lime", name="Target TP2", row=1, col=1)
-        fig.add_hline(y=m["tp3_price"], line_width=2.0, line_color="green", name="Finálny TP3", row=1, col=1)
-   
+    # 2. OBCHODNÉ HLADINY (Vykreslia sa len ak beží aktívny obchod vygenerovaný botom)
+    if is_active and m:
+        fig.add_hline(y=m["grid"][0], line_dash="dash", line_color="cyan", line_width=1.5, row=1, col=1)
+        fig.add_hline(y=m["final_sl"], line_width=2.0, line_color="red", row=1, col=1)
+        fig.add_hline(y=m["tp1_price"], line_width=1.5, line_dash="dot", line_color="lime", row=1, col=1)
+        fig.add_hline(y=m["tp2_price"], line_width=1.5, line_dash="dot", line_color="lime", row=1, col=1)
+        fig.add_hline(y=m["tp3_price"], line_width=2.0, line_color="green", row=1, col=1)
+
     fig.add_trace(go.Scatter(x=df['time'], y=data["cvd"], mode='lines', line=dict(color='orange', width=2), name="CVD"), row=2, col=1)
    
     oi_diff = np.diff(data["oi"], prepend=data["oi"])
@@ -334,88 +318,85 @@ def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: 
     st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================================
-# HLAVNÝ VÝPOČTOVÝ A MANAŽÉRSKY CYKLUS (MAIN)
+# HLAVNÝ VÝPOČTOVÝ A RENDERUJÚCI CYKLUS (MAIN)
 # =====================================================================
 def main():
     st.set_page_config(page_title="Autonomous AI Hunter 2026", layout="wide")
     st.title("🤖 Autonómny AI Sviečkový Riadiaci Kokpit")
    
-    current_month = datetime.now().strftime("%Y-%m")
-    if "current_operating_month" not in st.session_state:
-        st.session_state["current_operating_month"] = current_month
-        
-    if st.session_state["current_operating_month"] != current_month:
-        st.session_state["monthly_trades"] = []
-        st.session_state["current_operating_month"] = current_month
-        logger.info("Spustený automatický mesačný reset registra obchodov.")
-
+    # Globálny prepínač timeframe pre všetky tri okná súčasne
+    tf_choice = st.radio("Zvoľ operačnú granularitu sviečok pre všetky okná:", ["15m", "1m"], index=0, horizontal=True)
+   
     if "account_balance" not in st.session_state:
         st.session_state["account_balance"] = 100.0
         
-    if "history_trades" not in st.session_state:
-        st.session_state["history_trades"] = []
-        
     if "monthly_trades" not in st.session_state:
         st.session_state["monthly_trades"] = []
+        st.session_state["current_month_check"] = datetime.now().month
+
+    # Automatický mesačný reset registra
+    current_month = datetime.now().month
+    if current_month != st.session_state["current_month_check"]:
+        st.session_state["monthly_trades"] = []
+        st.session_state["current_month_check"] = current_month
 
     if "live_prices" not in st.session_state:
         st.session_state["live_prices"] = {"BTCUSDT": 68000.0}
 
-    st.markdown("### 🕒 Konfigurácia Exekučného Skenera")
-    selected_tf = st.radio("Zvoľte operačné meradlo sviečok pre všetky okná:", ["15m", "1m"], index=0, horizontal=True)
-
     loop = asyncio.get_event_loop()
     client = httpx.AsyncClient()
     
+    # ⚓ OKNO 1 DATA LOAD: Full permanentné sťahovanie pre BTC
     opt_lines = loop.run_until_complete(calculate_options_metrics(client))
-    btc_data = loop.run_until_complete(fetch_candle_data(client, "BTCUSDT", selected_tf))
-    if btc_data: 
-        st.session_state["live_prices"]["BTCUSDT"] = btc_data["price"]
+    btc_data = loop.run_until_complete(fetch_candle_data(client, "BTCUSDT", tf_choice))
     
+    # 🎯 OKNO 2 DATA LOAD: Dvojfázové odľahčené skenovanie pre určeného šampióna
     champ_pair = loop.run_until_complete(scan_market_for_champion(client))
-    champ_data = loop.run_until_complete(fetch_candle_data(client, champ_pair, selected_tf))
-    if champ_data: 
-        st.session_state["live_prices"][champ_pair] = champ_data["price"]
+    champ_data = loop.run_until_complete(fetch_candle_data(client, champ_pair, tf_choice)) if champ_pair else None
     
-    all_pairs = ["ETHUSDT", "SOLUSDT", "UNIUSDT", "LINKUSDT", "AAVEUSDT", "DOGEUSDT"]
+    # 🏹 OKNO 3 DATA LOAD: On-Demand ručný výber (Dáta sa sťahujú až po zvolení skratky)
+    all_pairs = ["ETHUSDT", "SOLUSDT", "UNIUSDT", "LINKUSDT", "AAVEUSDT", "DOGEUSDT", "AVAXUSDT"]
     selected_custom = st.sidebar.selectbox("Zadaj alebo vyhľadaj skratku mince (Okno 3):", all_pairs, index=1)
-    
-    custom_data = loop.run_until_complete(fetch_candle_data(client, selected_custom, selected_tf))
-    if custom_data: 
-        st.session_state["live_prices"][selected_custom] = custom_data["price"]
+    custom_data = loop.run_until_complete(fetch_candle_data(client, selected_custom, tf_choice))
 
+    if btc_data: st.session_state["live_prices"]["BTCUSDT"] = btc_data["price"]
+    if champ_data: st.session_state["live_prices"][champ_pair] = champ_data["price"]
+    if custom_data: st.session_state["live_prices"][selected_custom] = custom_data["price"]
+
+    # Výpočty obchodných setupov pre okná, pokiaľ je vygenerovaný platný signál
     setups = {}
-    if btc_data: setups["BTCUSDT"] = build_adaptive_setup("BTCUSDT", btc_data, get_complete_ai_setup("BTCUSDT"))
-    if champ_data: setups[champ_pair] = build_adaptive_setup(champ_pair, champ_data, get_complete_ai_setup(champ_pair))
-    if custom_data: setups[selected_custom] = build_adaptive_setup(selected_custom, custom_data, get_complete_ai_setup(selected_custom))
-
-    active_states = {
-        "BTCUSDT": setups.get("BTCUSDT", {}).get("is_active", False) if btc_data and btc_data["trend"] in ["LONG_ONLY", "SHORT_ONLY"] else False,
-        champ_pair: setups.get(champ_pair, {}).get("is_active", False) if champ_data and champ_data["trend"] in ["LONG_ONLY", "SHORT_ONLY"] else False,
-        selected_custom: setups.get(selected_custom, {}).get("is_active", False) if custom_data and custom_data["trend"] in ["LONG_ONLY", "SHORT_ONLY"] else False
-    }
+    if btc_data and btc_data["is_active"]: setups["BTCUSDT"] = build_adaptive_setup("BTCUSDT", btc_data, get_complete_ai_setup("BTCUSDT"))
+    if champ_data and champ_data["is_active"]: setups[champ_pair] = build_adaptive_setup(champ_pair, champ_data, get_complete_ai_setup(champ_pair))
+    if custom_data and custom_data["is_active"]: setups[selected_custom] = build_adaptive_setup(selected_custom, custom_data, get_complete_ai_setup(selected_custom))
 
     # =====================================================================
-    # SIDEBAR: Monitor Otvorených Pozícií
+    # SIDEBAR: STRUKTÚROVANÝ STAVOVÝ SEPARÁTOR (STATE MACHINE)
     # =====================================================================
     st.sidebar.markdown("### 🎯 Monitor Otvorených Pozícií")
     
-    for s_name, label_window in [("BTCUSDT", "Okno 1 (BTC)"), (champ_pair, f"Okno 2 ({champ_pair})"), (selected_custom, f"Okno 3 ({selected_custom})")]:
-        m_s = setups.get(s_name, {})
-        live_p = st.session_state["live_prices"].get(s_name, 0.0)
+    for s_name, label_window, d_source in [("BTCUSDT", "Okno 1 (BTC)", btc_data), (champ_pair, f"Okno 2 ({champ_pair})", champ_data), (selected_custom, f"Okno 3 ({selected_custom})", custom_data)]:
+        if d_source is None:
+            continue
+            
         ai_info = get_complete_ai_setup(s_name)
-        is_trade_running = active_states.get(s_name, False)
+        # Reálny výpočet Natrenovaného Win Rate per-coin z cloudu bez fiktívnych prípon
+        c_wins = ai_info.get("wins", 0)
+        c_losses = ai_info.get("losses", 0)
+        total_c = c_wins + c_losses
+        real_win_rate = (c_wins / total_c * 100.0) if total_c > 0 else 0.0
+        
+        p_win = real_win_rate / 100.0 if real_win_rate > 0 else 0.50
+        kelly_frac = max(0.0, (p_win * 1.5 - (1.0 - p_win)) / 1.5) * 0.25
+        allocated_usd = st.session_state["account_balance"] * kelly_frac
         
         with st.sidebar.container(border=True):
-            st.markdown(f"**🪙 {label_window} - {s_name}**")
+            st.markdown(f"**🪙 {label_window}**")
             
-            if is_trade_running:
-                p_win = ai_info.get("win_rate", 0.0) / 100.0
-                kelly_frac = max(0.0, (p_win * 1.5 - (1.0 - p_win)) / 1.5) * 0.25 if p_win > 0 else 0.02
-                allocated_usd = st.session_state["account_balance"] * kelly_frac
-                
+            if d_source["is_active"] and s_name in setups:
+                m_s = setups[s_name]
+                live_p = st.session_state["live_prices"].get(s_name, d_source["price"])
                 st.markdown(f"* Exekúcia: `{m_s.get('exec_type', 'SPOT')}`")
-                st.markdown(f"* Alokovaná Kellyho marža: `${allocated_usd:.2f} USD`")
+                st.markdown(f"* Alokovaná Marža: `${allocated_usd:.2f} USD`")
                 st.markdown(f"* Live Cena: `${live_p:,.2f}` | Vstup: `${m_s.get('grid', [live_p])[0]:,.2f}`")
                 
                 c_tp, c_sl = st.columns(2)
@@ -426,88 +407,100 @@ def main():
                 with c_sl:
                     st.caption(f"🚨 SL: ${m_s.get('final_sl', 0):,.2f}")
                     st.caption(f"⏳ Vlečenie: {m_s.get('trailing_dist', 0):.2f}")
-                    
-                st.markdown('* Live PnL: <span style="color:lime; font-weight:bold;">+1.45 %</span>', unsafe_allow_html=True)
             else:
+                # Stav hľadania anomálií bez zbytočných nulových hodnôt $0.00
                 st.markdown("<span style='color:orange; font-weight:bold;'>⏳ SKENOVANIE SIETE</span>", unsafe_allow_html=True)
-                st.caption("Model analyzuje inštitucionálne toky likvidity a čaká na optimálny signál.")
+                st.caption("Model analyzuje inštitucionálne toky a čaká na signál.")
 
     # =====================================================================
-    # VÝKONNOSTNÁ VRSTVA
+    # GRAPHICS ROW 1: PERFORMANCE MATRIX & EQUITY DASHBOARD
     # =====================================================================
     st.markdown("### 📊 Kvantitatívna Výkonnostná Vrstva (Od 6. Novembra 2026)")
-    
     c_equity, c_matrix = st.columns(2)
     
     with c_equity:
-        st.markdown("#### 📈 Equity Dashboard (Štartovacia čiara: $100)")
+        st.markdown("#### 📈 Equity Dashboard (Počiatočný kapitál: $100)")
         cum_pnl = 0.0
         equity_curve = [100.0]
         timeline = ["Štart"]
         
-        for idx, t in enumerate(st.session_state["history_trades"]):
+        for t in st.session_state["monthly_trades"]:
             cum_pnl += t["pnl_usd"]
             equity_curve.append(100.0 + cum_pnl)
-            timeline.append(t["date_label"])
+            timeline.append(t["date"])
             
         df_eq = pd.DataFrame({"Konto Balance ($)": equity_curve}, index=timeline)
         st.line_chart(df_eq)
-        st.metric(label="Reálna kumulatívna hodnota zisku/straty", value=f"${cum_pnl:+.2f} USD", delta=f"{(cum_pnl / 100.0)*100:.2f} % Zmena")
+        st.metric(label="Kumulatívna hodnota zisku/straty", value=f"${cum_pnl:+.2f} USD", delta=f"{(cum_pnl / 100.0)*100:.2f} %")
         
     with c_matrix:
         st.markdown("#### 🧠 Matrica Výkonu a Učenia AI modelov")
-        
         matrix_rows = []
         for c in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "UNIUSDT"]:
-            trades_coin = [t for t in st.session_state["history_trades"] if t["symbol"] == c]
-            s_win = len([t for t in trades_coin if t["direction"] == "SHORT" and t["type"] == "WIN"])
-            s_fail = len([t for t in trades_coin if t["direction"] == "SHORT" and t["type"] == "FAIL"])
-            l_win = len([t for t in trades_coin if t["direction"] == "LONG" and t["type"] == "WIN"])
-            l_fail = len([t for t in trades_coin if t["direction"] == "LONG" and t["type"] == "FAIL"])
-            
             ai_setup = get_complete_ai_setup(c)
+            c_w = ai_setup.get("wins", 0)
+            c_l = ai_setup.get("losses", 0)
+            t_trades = ai_setup.get("total_trades", 0) # Dynamické načítanie per-coin
+            
+            w_rate = (c_w / (c_w + c_l) * 100.0) if (c_w + c_l) > 0 else 0.0
             
             matrix_rows.append({
                 "Kryptomena": c,
-                "Zrealizované obchody": len(trades_coin),
-                "Short Win/Fail": f"{s_win} / {s_fail}",
-                "Long Win/Fail": f"{l_win} / {l_fail}",
-                "Učebné kroky (AI)": ai_setup.get("total_trades", 0),
-                "Natrenovaný Win Rate": f"{ai_setup.get('win_rate', 0.0):.1f} %"
+                "Zrealizované obchody": c_w + c_l,
+                "Short Win / Fail": f"{c_w} / {c_l}", # Čistý číselný formát bez W a F
+                "Long Win / Fail": f"{c_w} / {c_l}",
+                "Učebné kroky (AI)": t_trades,
+                "Natrenovaný Win Rate": f"{w_rate:.1f} %"
             })
-            
         st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("#### 📅 Register zrealizovaných obchodov za aktuálny mesiac")
+    # Register zrealizovaných obchodov za kalendárny mesiac
+    st.markdown("#### 📅 Mesačný register zrealizovaných obchodov")
     if st.session_state["monthly_trades"]:
-        df_monthly = pd.DataFrame(st.session_state["monthly_trades"], columns=["Pair", "Result", "PnL %"])
-        st.dataframe(df_monthly, use_container_width=True, hide_index=True)
+        df_m = pd.DataFrame(st.session_state["monthly_trades"])[["symbol", "result", "pnl_percent"]]
+        df_m.columns = ["Pair", "Result", "PnL %"]
+        st.dataframe(df_m, use_container_width=True, hide_index=True)
     else:
-        st.info("V aktuálnom kalendárnom mesiaci zatiaľ neboli uzatvorené žiadne obchody.")
+        st.info("Za tento kalendárny mesiac neboli zatiaľ zaznamenané žiadne uzavreté obchody.")
 
     st.markdown("---")
 
     # =====================================================================
-    # SVIEČKOVÉ OPERAČNÉ OKNÁ
+    # GRAPHICS ROW 2: TRI SAMOSTATNÉ AUTONÓMNE OPERAČNÉ OKNÁ (GRAFY)
     # =====================================================================
     st.markdown("### 📺 Autonómne Sviečkové Operačné Okná")
     
+    # ⚓ OKNO 1: Fixná Trhová Kotva (BTCUSDT)
     if btc_data:
-        st.markdown(f"#### 📈 Okno 1: Fixná Trhová Kotva (BTCUSDT) | Meradlo: `{selected_tf}` | Smer: `{btc_data['trend']}`")
-        draw_professional_dashboard("BTCUSDT", btc_data, setups.get("BTCUSDT"), opt_lines, active_states["BTCUSDT"])
+        st.markdown(f"#### 📈 Okno 1: Fixná Trhová Kotva (BTCUSDT) | Režim: `{btc_data['trend']}`")
+        draw_professional_dashboard("BTCUSDT", btc_data, setups.get("BTCUSDT"), btc_data["is_active"], opt_lines)
+    else:
+        st.error("Zlyhalo sťahovanie dát pre Okno 1 (BTCUSDT).")
         
     st.markdown("---")
     
+    # OKNO 2 A OKNO 3 VEDĽA SEBA PRE PREHĽADNÝ DASHBOARD
     col_w2, col_w3 = st.columns(2)
+    
     with col_w2:
+        # 🎯 OKNO 2: Šampión Kvantových Anomálií
         if champ_data:
-            st.markdown(f"#### 🎯 Okno 2: Šampión Kvantových Anomálií ({champ_pair}) | Meradlo: `{selected_tf}` | Smer: `{champ_data['trend']}`")
-            draw_professional_dashboard(champ_pair, champ_data, setups.get(champ_pair), None, active_states[champ_pair])
+            st.markdown(f"#### 🎯 Okno 2: Šampión Kvantových Anomálií ({champ_pair}) | Režim: `{champ_data['trend']}`")
+            draw_professional_dashboard(champ_pair, champ_data, setups.get(champ_pair), champ_data["is_active"])
+        else:
+            st.error("Zlyhalo automatické skenovanie a inicializácia Okna 2.")
+            
     with col_w3:
+        # 🏹 OKNO 3: Užívateľský Súkromný Radar (Ručný výber)
         if custom_data:
-            st.markdown(f"#### 🏹 Okno 3: Užívateľský Súkromný Radar ({selected_custom}) | Meradlo: `{selected_tf}` | Smer: `{custom_data['trend']}`")
-            draw_professional_dashboard(selected_custom, custom_data, setups.get(selected_custom), None, active_states[selected_custom])
+            st.markdown(f"#### 🏹 Okno 3: Užívateľský Súkromný Radar ({selected_custom}) | Režim: `{custom_data['trend']}`")
+            draw_professional_dashboard(selected_custom, custom_data, setups.get(selected_custom), custom_data["is_active"])
+        else:
+            st.error("Zlyhalo načítanie vybraného obchodného páru pre Okno 3.")
 
+    # =====================================================================
+    # SILENT BACKGROUND HEARTBEAT (ANTI-BLIKANIE STRÁNKY)
+    # =====================================================================
     if "last_refresh" not in st.session_state:
         st.session_state["last_refresh"] = datetime.now()
 
