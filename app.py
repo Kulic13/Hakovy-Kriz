@@ -14,12 +14,12 @@ from datetime import datetime
 # INŠTITUCIONÁLNE LOGOVANIE & FAIL-SAFE KONFIGURÁCIA
 # =====================================================================
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("QuantumOmniHunter")
+logger = logging.getLogger('QuantumOmniHunter')
 
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
-BINANCE_FUTURES_URL = "https://fapi.binance.com"
-BINANCE_OPTIONS_URL = "https://eapi.binance.com"
+SUPABASE_URL = st.secrets.get('SUPABASE_URL', '')
+SUPABASE_KEY = st.secrets.get('SUPABASE_KEY', '')
+BINANCE_FUTURES_URL = 'https://fapi.binance.com'
+BINANCE_OPTIONS_URL = 'https://eapi.binance.com'
 
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -27,7 +27,7 @@ if SUPABASE_URL and SUPABASE_KEY:
         from supabase import create_client
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
-        logger.error(f"Chyba inicializácie Supabase: {e}")
+        logger.error(f'Chyba inicializácie Supabase: {e}')
 
 # =====================================================================
 # SIEŤOVÁ VRSTVA S EXPONENCIÁLNYM BACKOFFOM (ANTI-RATE LIMIT 429)
@@ -44,7 +44,7 @@ async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict = N
             return response.json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
             if attempt == 2:
-                logger.error(f"Definitívne zlyhanie požiadavky na {url}: {e}")
+                logger.error(f'Definitívne zlyhanie požiadavky na {url}: {e}')
                 return {}
             await asyncio.sleep(backoff)
             backoff *= 2.0
@@ -54,29 +54,29 @@ async def fetch_with_retry(client: httpx.AsyncClient, url: str, params: dict = N
 # OPČNÝ KVANTITATÍVNY MODEL (MAX PAIN, CALL/PUT WALLS)
 # =====================================================================
 async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
-    default_metrics = {"max_pain": 68000.0, "call_wall": 72000.0, "put_wall": 64000.0}
+    default_metrics = {'max_pain': 68000.0, 'call_wall': 72000.0, 'put_wall': 64000.0}
     try:
-        exchange_info = await fetch_with_retry(client, f"{BINANCE_OPTIONS_URL}/eapi/v1/exchangeInfo")
-        if not exchange_info or "symbols" not in exchange_info:
+        exchange_info = await fetch_with_retry(client, f'{BINANCE_OPTIONS_URL}/v1/exchangeInfo')
+        if not exchange_info or 'symbols' not in exchange_info:
             return default_metrics
             
-        btc_symbols = [s["symbol"] for s in exchange_info["symbols"] if s["baseAsset"] == "BTC" and s["status"] == "TRADING"][:30]
+        btc_symbols = [s['symbol'] for s in exchange_info['symbols'] if s.get('baseAsset') == 'BTC' and s.get('status') == 'TRADING'][:30]
         if not btc_symbols:
             return default_metrics
             
-        open_interest_data = await fetch_with_retry(client, f"{BINANCE_OPTIONS_URL}/eapi/v1/openInterest")
+        open_interest_data = await fetch_with_retry(client, f'{BINANCE_OPTIONS_URL}/v1/openInterest')
         if not open_interest_data:
             return default_metrics
             
-        oi_map = {item["symbol"]: float(item["sumOpenInterest"]) for item in open_interest_data if "symbol" in item}
+        oi_map = {item['symbol']: float(item['sumOpenInterest']) for item in open_interest_data if 'symbol' in item}
         
         strikes = []
         calls_oi = {}
         puts_oi = {}
         
         for sym in btc_symbols:
-            parts = sym.split("-")
-            if len(parts) == 4:
+            parts = sym.split('-')
+            if len(parts) >= 4:
                 try:
                     strike = float(parts[2])
                     opt_type = parts[3]
@@ -85,9 +85,9 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
                     if strike not in strikes:
                         strikes.append(strike)
                     
-                    if opt_type == "C":
+                    if opt_type == 'C':
                         calls_oi[strike] = calls_oi.get(strike, 0.0) + oi
-                    elif opt_type == "P":
+                    elif opt_type == 'P':
                         puts_oi[strike] = puts_oi.get(strike, 0.0) + oi
                 except ValueError:
                     continue
@@ -95,8 +95,8 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
         if not strikes:
             return default_metrics
             
-        call_wall = max(calls_oi, key=calls_oi.get) if calls_oi else default_metrics["call_wall"]
-        put_wall = max(puts_oi, key=puts_oi.get) if puts_oi else default_metrics["put_wall"]
+        call_wall = max(calls_oi, key=calls_oi.get) if calls_oi else default_metrics['call_wall']
+        put_wall = max(puts_oi, key=puts_oi.get) if puts_oi else default_metrics['put_wall']
         
         min_pain = float('inf')
         max_pain = strikes[0]
@@ -112,9 +112,9 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
                 min_pain = total_pain
                 max_pain = k_j
                 
-        return {"max_pain": max_pain, "call_wall": call_wall, "put_wall": put_wall}
+        return {'max_pain': max_pain, 'call_wall': call_wall, 'put_wall': put_wall}
     except Exception as e:
-        logger.error(f"Chyba výpočtu opčných metrík: {e}")
+        logger.error(f'Chyba výpočtu opčných metrík: {e}')
         return default_metrics
 
 # =====================================================================
@@ -122,54 +122,52 @@ async def calculate_options_metrics(client: httpx.AsyncClient) -> dict:
 # =====================================================================
 async def scan_market_for_champion(client: httpx.AsyncClient):
     try:
-        tickers_24h = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr")
-        premium_data = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex")
-        
-        if not tickers_24h or not premium_data:
-            return "ETHUSDT"
+        tickers_24h = await fetch_with_retry(client, f'{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr')
+        if not tickers_24h:
+            return 'ETHUSDT'
             
         candidates = [
             t for t in tickers_24h 
-            if "symbol" in t and t["symbol"].endswith("USDT") and t["symbol"] != "BTCUSDT"
-            and float(t.get("quoteVolume", 0)) >= 10_000_000
+            if 'symbol' in t and t['symbol'].endswith('USDT') and t['symbol'] != 'BTCUSDT'
+            and float(t.get('quoteVolume', 0)) >= 10_000_000
         ]
         
         if not candidates:
-            return "ETHUSDT"
+            return 'ETHUSDT'
             
-        top_candidates = sorted(candidates, key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)[:5]
+        top_candidates = sorted(candidates, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)[:5]
         
         best_score = -1.0
-        champion_symbol = "ETHUSDT"
+        champion_symbol = 'ETHUSDT'
         
         for item in top_candidates:
-            sym = item["symbol"]
-            oi_res = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/openInterest", params={"symbol": sym})
-            if not oi_res or "openInterest" not in oi_res:
+            sym = item['symbol']
+            oi_res = await fetch_with_retry(client, f'{BINANCE_FUTURES_URL}/fapi/v1/openInterest', params={'symbol': sym})
+            if not oi_res or 'openInterest' not in oi_res:
                 continue
                 
-            oi_curr = float(oi_res["openInterest"])
-            price_change = abs(float(item.get("priceChangePercent", 0)))
+            oi_curr = float(oi_res['openInterest'])
+            price_change = abs(float(item.get('priceChangePercent', 0)))
             
-            score = (oi_curr * float(item.get("lastPrice", 1))) / max(0.1, price_change)
+            score = (oi_curr * float(item.get('lastPrice', 1))) / max(0.1, price_change)
             if score > best_score:
                 best_score = score
                 champion_symbol = sym
                 
         return champion_symbol
     except Exception as e:
-        logger.error(f"Chyba skenovania šampióna: {e}")
-        return "ETHUSDT"
+        logger.error(f'Chyba skenovania šampióna: {e}')
+        return 'ETHUSDT'
 
 async def fetch_candle_data(client: httpx.AsyncClient, sym: str):
     try:
-        klines = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/klines", params={"symbol": sym, "interval": st.session_state.get("timeframe", "15m"), "limit": 96})
-        premium_data = await fetch_with_retry(client, f"{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex")
+        klines = await fetch_with_retry(client, f'{BINANCE_FUTURES_URL}/fapi/v1/klines', params={'symbol': sym, 'interval': st.session_state.get('timeframe', '15m'), 'limit': 96})
+        premium_data = await fetch_with_retry(client, f'{BINANCE_FUTURES_URL}/fapi/v1/premiumIndex')
         
         if not klines or len(klines) < 14:
             return None
             
-        funding_map = {item["symbol"]: float(item["lastFundingRate"]) for item in premium_data if "symbol" in item} if premium_data else {}
+        funding_map = {item['symbol']: float(item['lastFundingRate']) for item in premium_data if 'symbol' in item} if premium_data else {}
         
         df = pd.DataFrame(klines, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'q_vol', 'no_trades', 'taker_b', 'taker_q', 'ignore'])
         df['time'] = pd.to_datetime(df['time'], unit='ms')
@@ -196,126 +194,133 @@ async def fetch_candle_data(client: httpx.AsyncClient, sym: str):
         np.random.seed(int(closes[-1]))
         sim_oi = np.clip(np.cumsum(np.random.randn(96) * 600) + 80000, 40000, 150000)
        
-        sim_lsr = 1.25 if sym == "BTCUSDT" else 0.78
+        sim_lsr = 1.25 if sym == 'BTCUSDT' else 0.78
        
         if closes[-1] > ema100 and sim_lsr < 0.85:
-            trend = "LONG_ONLY"
+            trend = 'LONG_ONLY'
         elif closes[-1] < ema100 and sim_lsr > 1.70:
-            trend = "SHORT_ONLY"
+            trend = 'SHORT_ONLY'
         else:
-            trend = "LONG_ONLY" if closes[-1] > ema100 else "SHORT_ONLY"
+            trend = 'LONG_ONLY' if closes[-1] > ema100 else 'SHORT_ONLY'
        
         return {
-            "df": df, "price": float(closes[-1]), "natr": float(natr_14), "trend": trend,
-            "resistance": float(np.max(highs[-20:])), "support": float(np.min(lows[-20:])),
-            "cvd": sim_cvd, "oi": sim_oi, "funding_rate": funding_map.get(sym, 0.0001)
+            'df': df, 'price': float(closes[-1]), 'natr': float(natr_14), 'trend': trend,
+            'resistance': float(np.max(highs[-20:])), 'support': float(np.min(lows[-20:])),
+            'cvd': sim_cvd, 'oi': sim_oi, 'funding_rate': funding_map.get(sym, 0.0001)
         }
     except Exception as e:
-        logger.error(f"Chyba sťahovania klines pre {sym}: {e}")
+        logger.error(f'Chyba sťahovania klines pre {sym}: {e}')
         return None
 
 # =====================================================================
 # AI ROZHODOVACIA STRATÉGIA, DEŇ 1 KELLY & PREPÍNANIE SPOT VS. PÁKA
 # =====================================================================
 def get_complete_ai_setup(symbol: str) -> dict:
-    default_setup = {"symbol": symbol, "win_rate": 58.4, "total_trades": 24, "sl_modifier": 1.0, "tp_modifier": 1.0}
+    default_setup = {'symbol': symbol, 'win_rate': 58.4, 'total_trades': 24, 'sl_modifier': 1.0, 'tp_modifier': 1.0}
     if not supabase:
         return default_setup
     try:
-        res = supabase.table("ai_learning_stats").select("*").eq("symbol", symbol).execute()
+        res = supabase.table('ai_learning_stats').select('*').eq('symbol', symbol).execute()
         if res and hasattr(res, 'data') and res.data:
-            return res.data[0] if isinstance(res.data, list) else res.data
+            if isinstance(res.data, list) and len(res.data) > 0:
+                return res.data[0]
+            elif isinstance(res.data, dict):
+                return res.data
     except Exception:
         pass
     return default_setup
 
 def build_adaptive_setup(symbol: str, data: dict, ai: dict):
-    price = data["price"]
-    natr = data["natr"]
-    trend = data["trend"]
-    funding = data["funding_rate"]
-    direction = 1 if trend == "LONG_ONLY" else -1
+    price = data['price']
+    natr = data['natr']
+    trend = data['trend']
+    funding = data['funding_rate']
+    direction = 1 if trend == 'LONG_ONLY' else -1
     mmr = 0.004
 
-    sl_percent = max(0.5, min(3.5, natr * 1.5 * ai.get("sl_modifier", 1.0)))
-    tp1_percent = sl_percent * 1.5 * ai.get("tp_modifier", 1.0)
-    tp2_percent = sl_percent * 3.0 * ai.get("tp_modifier", 1.0)
+    sl_percent = max(0.5, min(3.5, natr * 1.5 * ai.get('sl_modifier', 1.0)))
+    tp1_percent = sl_percent * 1.5 * ai.get('tp_modifier', 1.0)
+    tp2_percent = sl_percent * 3.0 * ai.get('tp_modifier', 1.0)
 
     calc_leverage = int(25.0 / sl_percent)
 
     if natr > 3.0:
-        exec_type = "🚨 BINANCE SPOT (Páka 1x - Ochrana Volatility)"
+        exec_type = '🚨 BINANCE SPOT (Páka 1x - Ochrana Volatility)'
         leverage = 1
-    elif trend == "LONG_ONLY" and funding > 0.10:
-        exec_type = "🚨 BINANCE SPOT (Páka 1x - Ochrana Funding Squeezu)"
+    elif trend == 'LONG_ONLY' and funding > 0.10:
+        exec_type = '🚨 BINANCE SPOT (Páka 1x - Ochrana Funding Squeezu)'
         leverage = 1
     else:
-        exec_type = f"⚡ BINANCE FUTURES (Páka {max(2, min(10, calc_leverage))}x)"
-        leverage = max(2, min(10, calc_leverage))
+        lev = max(2, min(10, calc_leverage))
+        exec_type = f'⚡ BINANCE FUTURES (Páka {lev}x)'
+        leverage = lev
 
     tp1_price = price * (1.0 + (direction * (tp1_percent / 100.0)))
     tp2_price = price * (1.0 + (direction * (tp2_percent / 100.0)))
 
-    liq_long_20x = data["support"] * (1.0 - (1/20) + mmr)
-    liq_short_20x = data["resistance"] * (1.0 + (1/20) - mmr)
-    tp3_price = liq_short_20x * 0.995 if trend == "LONG_ONLY" else liq_long_20x * 1.005
+    liq_long_20x = data['support'] * (1.0 - (1/20) + mmr)
+    liq_short_20x = data['resistance'] * (1.0 + (1/20) - mmr)
+    tp3_price = liq_short_20x * 0.995 if trend == 'LONG_ONLY' else liq_long_20x * 1.005
 
     final_sl = price * (1.0 - (direction * (sl_percent / 100.0)))
     grid = [price, price * (1.0 - (direction * (sl_percent * 0.33 / 100.0))), price * (1.0 - (direction * (sl_percent * 0.66 / 100.0)))]
 
     return {
-        "sl_percent": sl_percent, "tp1_price": tp1_price, "tp2_price": tp2_price, "tp3_price": tp3_price,
-        "final_sl": final_sl, "grid": grid, "leverage": leverage, "exec_type": exec_type, "trailing_dist": natr * 0.5
+        'sl_percent': sl_percent, 'tp1_price': tp1_price, 'tp2_price': tp2_price, 'tp3_price': tp3_price,
+        'final_sl': final_sl, 'grid': grid, 'leverage': leverage, 'exec_type': exec_type, 'trailing_dist': natr * 0.5
     }
 
 # =====================================================================
 # VYKRESLOVANIE GRAFOV (STOPERCENTNÁ FIXÁCIA PLOTLY PRE VŠETKY OKNÁ)
 # =====================================================================
 def draw_professional_dashboard(symbol: str, data: dict, m: dict, option_lines: dict = None):
-    df = data["df"]
+    df = data['df']
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
 
-    fig.add_trace(go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="Cena"), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Cena'), row=1, col=1)
 
-    fig.add_hline(y=m["grid"][0], line_dash="dash", line_color="cyan", line_width=1.5, row=1, col=1)
-    fig.add_hline(y=m["final_sl"], line_width=2.0, line_color="red", row=1, col=1)
-    fig.add_hline(y=m["tp1_price"], line_width=1.5, line_dash="dot", line_color="lime", row=1, col=1)
-    fig.add_hline(y=m["tp2_price"], line_width=1.5, line_dash="dot", line_color="lime", row=1, col=1)
-    fig.add_hline(y=m["tp3_price"], line_width=2.0, line_color="green", row=1, col=1)
+    fig.add_hline(y=m['grid'][0], line_dash='dash', line_color='cyan', line_width=1.5, row=1, col=1)
+    fig.add_hline(y=m['final_sl'], line_width=2.0, line_color='red', row=1, col=1)
+    fig.add_hline(y=m['tp1_price'], line_width=1.5, line_dash='dot', line_color='lime', row=1, col=1)
+    fig.add_hline(y=m['tp2_price'], line_width=1.5, line_dash='dot', line_color='lime', row=1, col=1)
+    fig.add_hline(y=m['tp3_price'], line_width=2.0, line_color='green', row=1, col=1)
 
-    if option_lines and symbol == "BTCUSDT":
-        fig.add_hline(y=option_lines["max_pain"], line_width=2.0, line_dash="dashdot", line_color="violet", name="Max Pain", row=1, col=1)
-        fig.add_hline(y=option_lines["call_wall"], line_width=2.5, line_color="fuchsia", name="Call Wall", row=1, col=1)
-        fig.add_hline(y=option_lines["put_wall"], line_width=2.5, line_color="purple", name="Put Wall", row=1, col=1)
+    if option_lines and symbol == 'BTCUSDT':
+        fig.add_hline(y=option_lines['max_pain'], line_width=2.0, line_dash='dashdot', line_color='violet', name='Max Pain', row=1, col=1)
+        fig.add_hline(y=option_lines['call_wall'], line_width=2.5, line_color='fuchsia', name='Call Wall', row=1, col=1)
+        fig.add_hline(y=option_lines['put_wall'], line_width=2.5, line_color='purple', name='Put Wall', row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=df['time'], y=data["cvd"], mode='lines', line=dict(color='orange', width=2), name="CVD"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df['time'], y=data['cvd'], mode='lines', line=dict(color='orange', width=2), name='CVD'), row=2, col=1)
 
-    oi_diff = np.diff(data["oi"], prepend=data["oi"])
+    oi_diff = np.diff(data['oi'], prepend=data['oi'])
     oi_colors = ['#1f77b4' if d >= 0 else '#0f3a57' for d in oi_diff]
-    fig.add_trace(go.Bar(x=df['time'], y=data["oi"], marker_color=oi_colors, name="Open Interest"), row=3, col=1)
+    fig.add_trace(go.Bar(x=df['time'], y=data['oi'], marker_color=oi_colors, name='Open Interest'), row=3, col=1)
 
-    fig.update_layout(xaxis_rangeslider_visible=False, height=450, template="plotly_dark", showlegend=False, margin=dict(t=10, b=10, l=10, r=10))
+    fig.update_layout(xaxis_rangeslider_visible=False, height=450, template='plotly_dark', showlegend=False, margin=dict(t=10, b=10, l=10, r=10))
     st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================================
 # HLAVNÝ VÝPOČTOVÝ A RENDERUJÚCI CYKLUS (MAIN)
 # =====================================================================
 def main():
-    st.set_page_config(page_title="Autonomous AI Hunter 2026", layout="wide")
-    st.title("🤖 Autonómny AI Sviečkový Riadiaci Kokpit")
+    st.set_page_config(page_title='Autonomous AI Hunter 2026', layout='wide')
+    st.title('🤖 Autonómny AI Sviečkový Riadiaci Kokpit')
 
-    if "account_balance" not in st.session_state:
-        st.session_state["account_balance"] = 100.0
+    if 'account_balance' not in st.session_state:
+        st.session_state['account_balance'] = 100.0
 
-    if "history_trades" not in st.session_state:
-        st.session_state["history_trades"] = [
-            {"time": "2026-11-06 08:00", "symbol": "BTCUSDT", "direction": "LONG", "pnl_usd": 12.50, "type": "WIN", "steps": 45},
-            {"time": "2026-11-06 09:30", "symbol": "SOLUSDT", "direction": "SHORT", "pnl_usd": -4.20, "type": "FAIL", "steps": 21},
-            {"time": "2026-11-06 11:15", "symbol": "ETHUSDT", "direction": "LONG", "pnl_usd": 18.90, "type": "WIN", "steps": 33}
+    if 'timeframe' not in st.session_state:
+        st.session_state['timeframe'] = '15m'
+
+    if 'history_trades' not in st.session_state:
+        st.session_state['history_trades'] = [
+            {'time': '2026-11-06 08:00', 'symbol': 'BTCUSDT', 'direction': 'LONG', 'pnl_usd': 12.50, 'type': 'WIN', 'steps': 45},
+            {'time': '2026-11-06 09:30', 'symbol': 'SOLUSDT', 'direction': 'SHORT', 'pnl_usd': -4.20, 'type': 'FAIL', 'steps': 21},
+            {'time': '2026-11-06 11:15', 'symbol': 'ETHUSDT', 'direction': 'LONG', 'pnl_usd': 18.90, 'type': 'WIN', 'steps': 33}
         ]
 
-    if "live_prices" not in st.session_state:
-        st.session_state["live_prices"] = {"BTCUSDT": 68000.0, "ETHUSDT": 2500.0, "SOLUSDT": 140.0}
+    if 'live_prices' not in st.session_state:
+        st.session_state['live_prices'] = {'BTCUSDT': 68000.0, 'ETHUSDT': 2500.0, 'SOLUSDT': 140.0}
 
     loop = asyncio.get_event_loop()
     client = httpx.AsyncClient()
@@ -323,122 +328,136 @@ def main():
     opt_lines = loop.run_until_complete(calculate_options_metrics(client))
     champ_pair = loop.run_until_complete(scan_market_for_champion(client))
 
-    all_pairs = ["ETHUSDT", "SOLUSDT", "UNIUSDT", "LINKUSDT", "AAVEUSDT", "DOGEUSDT"]
-    selected_custom = st.sidebar.selectbox("Zadaj alebo vyhľadaj skratku mince (Okno 3):", all_pairs, index=1)
+    all_pairs = ['ETHUSDT', 'SOLUSDT', 'UNIUSDT', 'LINKUSDT', 'AAVEUSDT', 'DOGEUSDT']
+    selected_custom = st.sidebar.selectbox('Zadaj alebo vyhľadaj skratku mince (Okno 3):', all_pairs, index=1)
 
-    btc_data = loop.run_until_complete(fetch_candle_data(client, "BTCUSDT"))
+    btc_data = loop.run_until_complete(fetch_candle_data(client, 'BTCUSDT'))
     champ_data = loop.run_until_complete(fetch_candle_data(client, champ_pair))
     custom_data = loop.run_until_complete(fetch_candle_data(client, selected_custom))
 
-    if btc_data: st.session_state["live_prices"]["BTCUSDT"] = btc_data["price"]
-    if champ_data: st.session_state["live_prices"][champ_pair] = champ_data["price"]
-    if custom_data: st.session_state["live_prices"][selected_custom] = custom_data["price"]
+    if btc_data: st.session_state['live_prices']['BTCUSDT'] = btc_data['price']
+    if champ_data: st.session_state['live_prices'][champ_pair] = champ_data['price']
+    if custom_data: st.session_state['live_prices'][selected_custom] = custom_data['price']
 
-    st.markdown("### 📊 Kvantitatívna Výkonnostná Vrstva (Počítané od 6. Novembra 2026)")
+    # =====================================================================
+    # GRAPHICS ROW 1: EQUITY DASHBOARD & MATRICA VÝKONU (BOD 2 & 3)
+    # =====================================================================
+    st.markdown('### 📊 Kvantitatívna Výkonnostná Vrstva (Počítané od 6. Novembra 2026)')
 
     c_equity, c_matrix = st.columns(2)
 
     with c_equity:
-        st.markdown("#### 📈 Equity Dashboard (Štartovacia čiara: $100)")
+        st.markdown('#### 📈 Equity Dashboard (Štartovacia čiara: $100)')
         cum_pnl = 0.0
         equity_curve = [100.0]
-        timeline = ["Štart"]
+        timeline = ['Štart']
 
-        for t in st.session_state["history_trades"]:
-            cum_pnl += t["pnl_usd"]
+        for t in st.session_state['history_trades']:
+            cum_pnl += t['pnl_usd']
             equity_curve.append(100.0 + cum_pnl)
-            timeline.append(t["time"])
+            timeline.append(t['time'])
 
-        df_eq = pd.DataFrame({"Konto Balance ($)": equity_curve}, index=timeline)
+        df_eq = pd.DataFrame({'Konto Balance ($)': equity_curve}, index=timeline)
         st.line_chart(df_eq)
-        st.metric(label="Reálna kumulatívna hodnota zisku/straty", value=f"${cum_pnl:+.2f} USD", delta=f"{(cum_pnl / 100.0)*100:.2f} % Zmena")
+        st.metric(label='Reálna kumulatívna hodnota zisku/straty', value=f'${cum_pnl:+.2f} USD', delta=f'{(cum_pnl / 100.0)*100:.2f} % Zmena')
 
     with c_matrix:
-        st.markdown("#### 🧠 Matrica Výkonu a Učenia AI modelov")
+        st.markdown('#### 🧠 Matrica Výkonu a Učenia AI modelov')
 
         matrix_rows = []
-        for c in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "UNIUSDT"]:
-            trades_coin = [t for t in st.session_state["history_trades"] if t["symbol"] == c]
-            s_win = len([t for t in trades_coin if t["direction"] == "SHORT" and t["type"] == "WIN"])
-            s_fail = len([t for t in trades_coin if t["direction"] == "SHORT" and t["type"] == "FAIL"])
-            l_win = len([t for t in trades_coin if t["direction"] == "LONG" and t["type"] == "WIN"])
-            l_fail = len([t for t in trades_coin if t["direction"] == "LONG" and t["type"] == "FAIL"])
+        for c in ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'UNIUSDT']:
+            trades_coin = [t for t in st.session_state['history_trades'] if t['symbol'] == c]
+            s_win = len([t for t in trades_coin if t['direction'] == 'SHORT' and t['type'] == 'WIN'])
+            s_fail = len([t for t in trades_coin if t['direction'] == 'SHORT' and t['type'] == 'FAIL'])
+            l_win = len([t for t in trades_coin if t['direction'] == 'LONG' and t['type'] == 'WIN'])
+            l_fail = len([t for t in trades_coin if t['direction'] == 'LONG' and t['type'] == 'FAIL'])
 
             ai_setup = get_complete_ai_setup(c)
+            total_tr = ai_setup.get('total_trades', 15) if isinstance(ai_setup, dict) else 15
+            w_rate = ai_setup.get('win_rate', 55.0) if isinstance(ai_setup, dict) else 55.0
 
             matrix_rows.append({
-                "Kryptomena": c,
-                "Zrealizované obchody": len(trades_coin),
-                "Short Win/Fail": f"{s_win}W / {s_fail}F",
-                "Long Win/Fail": f"{l_win}W / {l_fail}F",
-                "Učebné kroky (AI)": ai_setup.get("total_trades", 15),
-                "Natrenovaný Win Rate": f"{ai_setup.get('win_rate', 55.0):.1f} %"
+                'Kryptomena': c,
+                'Zrealizované obchody': len(trades_coin),
+                'Short Win/Fail': f'{s_win}W / {s_fail}F',
+                'Long Win/Fail': f'{l_win}W / {l_fail}F',
+                'Učebné kroky (AI)': total_tr,
+                'Natrenovaný Win Rate': f'{w_rate:.1f} %'
             })
 
         st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("---")
+    st.markdown('---')
 
     setups = {}
-    if btc_data: setups["BTCUSDT"] = build_adaptive_setup("BTCUSDT", btc_data, get_complete_ai_setup("BTCUSDT"))
+    if btc_data: setups['BTCUSDT'] = build_adaptive_setup('BTCUSDT', btc_data, get_complete_ai_setup('BTCUSDT'))
     if champ_data: setups[champ_pair] = build_adaptive_setup(champ_pair, champ_data, get_complete_ai_setup(champ_pair))
     if custom_data: setups[selected_custom] = build_adaptive_setup(selected_custom, custom_data, get_complete_ai_setup(selected_custom))
 
-    st.sidebar.markdown("### 🎯 Monitor Otvorených Pozícií (BOD 1)")
+    # =====================================================================
+    # SIDEBAR: AKTÍVNY MONITORING POZÍCIÍ & STRATÉGIA (BOD 1)
+    # =====================================================================
+    st.sidebar.markdown('### 🎯 Monitor Otvorených Pozícií (BOD 1)')
 
-    for s_name, label_window in [("BTCUSDT", "Okno 1 (BTC)"), (champ_pair, f"Okno 2 ({champ_pair})"), (selected_custom, f"Okno 3 ({selected_custom})")]:
+    for s_name, label_window in [('BTCUSDT', 'Okno 1 (BTC)'), (champ_pair, f'Okno 2 ({champ_pair})'), (selected_custom, f'Okno 3 ({selected_custom})')]:
         m_s = setups.get(s_name, {})
-        live_p = st.session_state["live_prices"].get(s_name, 0.0)
+        live_p = st.session_state['live_prices'].get(s_name, 0.0)
 
         ai_info = get_complete_ai_setup(s_name)
-        p_win = ai_info.get("win_rate", 55.0) / 100.0
+        w_r = ai_info.get('win_rate', 55.0) if isinstance(ai_info, dict) else 55.0
+        p_win = w_r / 100.0
         kelly_frac = max(0.0, (p_win * 1.5 - (1.0 - p_win)) / 1.5) * 0.25
         allocated_usd = 100.0 * kelly_frac
 
         with st.sidebar.container(border=True):
-            st.markdown(f"**🪙 {label_window}**")
-            st.markdown(f"* Exekúcia: `{m_s.get('exec_type', 'SPOT')}`")
-            st.markdown(f"* Alokovaná Kellyho marža: `${allocated_usd:.2f} USD`")
-            st.markdown(f"* Live Cena: `${live_p:,.2f}` | Vstup: `${m_s.get('grid', [0])[0]:,.2f}`")
+            st.markdown(f'**🪙 {label_window}**')
+            st.markdown(f'* Exekúcia: `{m_s.get('exec_type', 'SPOT')}`')
+            st.markdown(f'* Alokovaná Kellyho marža: `${allocated_usd:.2f} USD`')
+            st.markdown(f'* Live Cena: `${live_p:,.2f}` | Vstup: `${m_s.get('grid', [0])[0]:,.2f}`')
 
             c_tp, c_sl = st.columns(2)
             with c_tp:
-                st.caption(f"🎯 TP1: ${m_s.get('tp1_price', 0):,.2f}")
-                st.caption(f"🎯 TP2: ${m_s.get('tp2_price', 0):,.2f}")
-                st.caption(f"🚀 TP3: ${m_s.get('tp3_price', 0):,.2f}")
+                st.caption(f'🎯 TP1: ${m_s.get('tp1_price', 0):,.2f}')
+                st.caption(f'🎯 TP2: ${m_s.get('tp2_price', 0):,.2f}')
+                st.caption(f'🚀 TP3: ${m_s.get('tp3_price', 0):,.2f}')
             with c_sl:
-                st.caption(f"🚨 SL: ${m_s.get('final_sl', 0):,.2f}")
-                st.caption(f"⏳ Vlečenie: {m_s.get('trailing_dist', 0):.2f}")
+                st.caption(f'🚨 SL: ${m_s.get('final_sl', 0):,.2f}')
+                st.caption(f'⏳ Vlečenie: {m_s.get('trailing_dist', 0):.2f}')
 
-            st.markdown("* Live PnL: +1.45 %", unsafe_allow_html=True)
+            st.markdown('* Live PnL: <span style='color:lime; font-weight:bold;'>+1.45 %</span>', unsafe_allow_html=True)
 
-    st.markdown("### 📺 Autonómne Sviečkové Operačné Okná")
+    # =====================================================================
+    # GRAPHICS ROW 2: OBOJSMERNÉ GRAFICKÉ PANELY OKIEN 1, 2 A 3
+    # =====================================================================
+    st.markdown('### 📺 Autonómne Sviečkové Operačné Okná')
 
     if btc_data:
-        st.markdown(f"#### 📈 Okno 1: Fixná Trhová Kotva (BTCUSDT) | Smer: `{btc_data['trend']}`")
-        draw_professional_dashboard("BTCUSDT", btc_data, setups["BTCUSDT"], opt_lines)
+        st.markdown(f'#### 📈 Okno 1: Fixná Trhová Kotva (BTCUSDT) | Smer: `{btc_data['trend']}`')
+        draw_professional_dashboard('BTCUSDT', btc_data, setups['BTCUSDT'], opt_lines)
 
-    st.markdown("---")
+    st.markdown('---')
 
     col_w2, col_w3 = st.columns(2)
     with col_w2:
         if champ_data:
-            st.markdown(f"#### 🎯 Okno 2: Šampión Kvantových Anomálií ({champ_pair}) | Smer: `{champ_data['trend']}`")
+            st.markdown(f'#### 🎯 Okno 2: Šampión Kvantových Anomálií ({champ_pair}) | Smer: `{champ_data['trend']}`')
             draw_professional_dashboard(champ_pair, champ_data, setups[champ_pair])
     with col_w3:
         if custom_data:
-            st.markdown(f"#### 🏹 Okno 3: Užívateľský Súkromný Radar ({selected_custom}) | Smer: `{custom_data['trend']}`")
+            st.markdown(f'#### 🏹 Okno 3: Užívateľský Súkromný Radar ({selected_custom}) | Smer: `{custom_data['trend']}`')
             draw_professional_dashboard(selected_custom, custom_data, setups[selected_custom])
 
-    if "last_refresh" not in st.session_state:
-        st.session_state["last_refresh"] = datetime.now()
+    # =====================================================================
+    # SILENT BACKGROUND HEARTBEAT (ANTI-BLIKANIE STRÁNKY)
+    # =====================================================================
+    if 'last_refresh' not in st.session_state:
+        st.session_state['last_refresh'] = datetime.now()
 
     @st.fragment(run_every=60)
     def background_heartbeat():
-        st.session_state["last_refresh"] = datetime.now()
+        st.session_state['last_refresh'] = datetime.now()
 
     background_heartbeat()
 
-if __name__ == "__main__":
-    st.session_state["timeframe"] = "15m"
+if __name__ == '__main__':
     main()
